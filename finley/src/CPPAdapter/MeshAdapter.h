@@ -1,16 +1,18 @@
-// $Id$
-/* 
- ************************************************************
- *          Copyright 2006 by ACcESS MNRF                   *
- *                                                          *
- *              http://www.access.edu.au                    *
- *       Primary Business: Queensland, Australia            *
- *  Licensed under the Open Software License version 3.0    *
- *     http://www.opensource.org/licenses/osl-3.0.php       *
- *                                                          *
- ************************************************************
-*/
-                                                                           
+
+/* $Id$ */
+
+/*******************************************************
+ *
+ *           Copyright 2003-2007 by ACceSS MNRF
+ *       Copyright 2007 by University of Queensland
+ *
+ *                http://esscc.uq.edu.au
+ *        Primary Business: Queensland, Australia
+ *  Licensed under the Open Software License version 3.0
+ *     http://www.opensource.org/licenses/osl-3.0.php
+ *
+ *******************************************************/
+
 #if !defined finley_MeshAdapter_20040526_H
 #define finley_MeshAdapter_20040526_H
 #include "system_dep.h"
@@ -20,12 +22,14 @@ extern "C" {
 #include "../Finley.h"
 #include "../Assemble.h"
 #include "paso/SystemMatrix.h"
+#include "paso/SolverFCT.h"
 }
 
 #include "FinleyError.h"
 #include "FinleyAdapterException.h"
 
 #include "SystemMatrixAdapter.h"
+#include "TransportProblemAdapter.h"
 #include "escript/AbstractContinuousDomain.h"
 #include "escript/FunctionSpace.h"
 #include "escript/FunctionSpaceFactory.h"
@@ -91,7 +95,7 @@ class MeshAdapter : public escript::AbstractContinuousDomain {
 
      Description:
      Constructor for MeshAdapter. The pointer passed to MeshAdapter
-     is deleted using a call to Finley_Mesh_deallocate in the
+     is deleted using a call to Finley_Mesh_free in the
      MeshAdapter destructor.
 
      Throws:
@@ -100,7 +104,7 @@ class MeshAdapter : public escript::AbstractContinuousDomain {
      \param finleyMesh Input - A pointer to the externally constructed 
                                finley mesh.The pointer passed to MeshAdapter
                                is deleted using a call to 
-                               Finley_Mesh_deallocate in the MeshAdapter 
+                               Finley_Mesh_free in the MeshAdapter 
                                destructor.
   */
   FINLEY_DLL_API
@@ -116,11 +120,25 @@ class MeshAdapter : public escript::AbstractContinuousDomain {
   /**
      \brief
      Destructor for MeshAdapter. As specified in the constructor
-     this calls Finley_Mesh_deallocate for the pointer given to the 
+     this calls Finley_Mesh_free for the pointer given to the 
      constructor.
   */
   FINLEY_DLL_API
   ~MeshAdapter();
+
+  /**
+     \brief
+     return the number of processors used for this domain
+  */
+  FINLEY_DLL_API
+  virtual int getMPISize() const;
+  /**
+     \brief
+     return the number MPI rank of this processor
+  */
+
+  FINLEY_DLL_API
+  virtual int getMPIRank() const;
 
   /**
      \brief
@@ -147,6 +165,22 @@ class MeshAdapter : public escript::AbstractContinuousDomain {
   */
   FINLEY_DLL_API
   void write(const std::string& fileName) const;
+
+  /**
+     \brief
+     Write the current mesh to a file with the given name.
+     \param fileName Input - The name of the file to write to.
+  */
+  FINLEY_DLL_API
+  void Print_Mesh_Info(const bool) const;
+
+  /**
+     \brief
+     dumps the mesh to a file with the given name.
+     \param fileName Input - The name of the file
+  */
+  FINLEY_DLL_API
+  void dump(const std::string& fileName) const;
 
   /**
      \brief
@@ -483,10 +517,24 @@ class MeshAdapter : public escript::AbstractContinuousDomain {
   virtual void addPDEToRHS(escript::Data& rhs,
                      const escript::Data& X, const escript::Data& Y,
                      const escript::Data& y, const escript::Data& y_contact) const;
+  /**
+     \brief
+     adds a PDE onto a transport problem
+  */
+
+  FINLEY_DLL_API
+  virtual void addPDEToTransportProblem(
+                     TransportProblemAdapter& tp, escript::Data& source, 
+                     const escript::Data& M,
+                     const escript::Data& A, const escript::Data& B, const escript::Data& C,const  escript::Data& D,
+                     const  escript::Data& X,const  escript::Data& Y,
+                     const escript::Data& d, const escript::Data& y,
+                     const escript::Data& d_contact,const escript::Data& y_contact) const;
+
 
   /**
      \brief
-    creates a SystemMatrixAdapter stiffness matrix an initializes it with zeros:
+    creates a SystemMatrixAdapter stiffness matrix and initializes it with zeros:
   */
   FINLEY_DLL_API
   SystemMatrixAdapter newSystemMatrix(
@@ -494,6 +542,19 @@ class MeshAdapter : public escript::AbstractContinuousDomain {
                       const escript::FunctionSpace& row_functionspace,
                       const int column_blocksize,
                       const escript::FunctionSpace& column_functionspace,
+                      const int type) const;
+  /**
+   \brief 
+    creates a TransportProblemAdapter 
+
+  */
+
+  FINLEY_DLL_API
+  TransportProblemAdapter newTransportProblem(
+                      const double theta,
+                      const double dt_max,
+                      const int blocksize,
+                      const escript::FunctionSpace& functionspace,
                       const int type) const;
 
   /**

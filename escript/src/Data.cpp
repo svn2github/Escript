@@ -1,27 +1,31 @@
-// $Id$
 
-/*
- ************************************************************
- *          Copyright 2006 by ACcESS MNRF                   *
- *                                                          *
- *              http://www.access.edu.au                    *
- *       Primary Business: Queensland, Australia            *
- *  Licensed under the Open Software License version 3.0    *
- *     http://www.opensource.org/licenses/osl-3.0.php       *
- *                                                          *
- ************************************************************
-*/
+/* $Id$ */
+
+/*******************************************************
+ *
+ *           Copyright 2003-2007 by ACceSS MNRF
+ *       Copyright 2007 by University of Queensland
+ *
+ *                http://esscc.uq.edu.au
+ *        Primary Business: Queensland, Australia
+ *  Licensed under the Open Software License version 3.0
+ *     http://www.opensource.org/licenses/osl-3.0.php
+ *
+ *******************************************************/
+
 #include "Data.h"
 
 #include "DataExpanded.h"
 #include "DataConstant.h"
 #include "DataTagged.h"
 #include "DataEmpty.h"
-#include "DataArray.h"
 #include "DataArrayView.h"
 #include "FunctionSpaceFactory.h"
 #include "AbstractContinuousDomain.h"
 #include "UnaryFuncs.h"
+extern "C" {
+#include "escript/blocktimer.h"
+}
 
 #include <fstream>
 #include <algorithm>
@@ -56,8 +60,13 @@ Data::Data(double value,
   for (int i = 0; i < shape.attr("__len__")(); ++i) {
     dataPointShape.push_back(extract<const int>(shape[i]));
   }
-  DataArray temp(dataPointShape,value);
-  initialise(temp.getView(),what,expanded);
+
+  int len = DataArrayView::noValues(dataPointShape);
+  DataVector temp_data(len,value,len);
+  DataArrayView temp_dataView(temp_data, dataPointShape);
+
+  initialise(temp_dataView, what, expanded);
+
   m_protected=false;
 }
 
@@ -66,9 +75,13 @@ Data::Data(double value,
 	   const FunctionSpace& what,
            bool expanded)
 {
-  DataArray temp(dataPointShape,value);
-  pair<int,int> dataShape=what.getDataShape();
-  initialise(temp.getView(),what,expanded);
+  int len = DataArrayView::noValues(dataPointShape);
+
+  DataVector temp_data(len,value,len);
+  DataArrayView temp_dataView(temp_data, dataPointShape);
+
+  initialise(temp_dataView, what, expanded);
+
   m_protected=false;
 }
 
@@ -151,23 +164,41 @@ Data::Data(const object& value,
   m_protected=false;
 }
 
+
 Data::Data(const object& value,
            const Data& other)
 {
+
+  numeric::array asNumArray(value);
+
+
+  // extract the shape of the numarray
+  DataArrayView::ShapeType tempShape;
+  for (int i=0; i < asNumArray.getrank(); i++) {
+    tempShape.push_back(extract<int>(asNumArray.getshape()[i]));
+  }
+  // get the space for the data vector
+  int len = DataArrayView::noValues(tempShape);
+  DataVector temp_data(len, 0.0, len);
+  DataArrayView temp_dataView(temp_data, tempShape);
+  temp_dataView.copy(asNumArray);
+
   //
   // Create DataConstant using the given value and all other parameters
   // copied from other. If value is a rank 0 object this Data
   // will assume the point data shape of other.
-  DataArray temp(value);
-  if (temp.getView().getRank()==0) {
-    //
-    // Create a DataArray with the scalar value for all elements
-    DataArray temp2(other.getPointDataView().getShape(),temp.getView()());
-    initialise(temp2.getView(),other.getFunctionSpace(),false);
+
+  if (temp_dataView.getRank()==0) {
+    int len = DataArrayView::noValues(other.getPointDataView().getShape());
+
+    DataVector temp2_data(len, temp_dataView(), len);
+    DataArrayView temp2_dataView(temp2_data, other.getPointDataView().getShape());
+    initialise(temp2_dataView, other.getFunctionSpace(), false);
+
   } else {
     //
     // Create a DataConstant with the same sample shape as other
-    initialise(temp.getView(),other.getFunctionSpace(),false);
+    initialise(temp_dataView, other.getFunctionSpace(), false);
   }
   m_protected=false;
 }
@@ -212,14 +243,6 @@ Data::getShapeTuple() const
         throw DataException("Error - illegal Data rank.");
   }
 }
-
-const
-boost::python::str
-Data::str() const
-{
-  return boost::python::str(toString().c_str());
-}
-
 void
 Data::copy(const Data& other)
 {
@@ -346,14 +369,14 @@ Data::isConstant() const
 }
 
 void
-Data::setProtection() 
-{ 
+Data::setProtection()
+{
    m_protected=true;
 }
 
 bool
-Data::isProtected() const 
-{ 
+Data::isProtected() const
+{
    return m_protected;
 }
 
@@ -404,45 +427,45 @@ Data::tag()
 Data
 Data::oneOver() const
 {
-  return escript::unaryOp(*this,bind1st(divides<double>(),1.));
+  return C_TensorUnaryOperation(*this, bind1st(divides<double>(),1.));
 }
 
 Data
 Data::wherePositive() const
 {
-  return escript::unaryOp(*this,bind2nd(greater<double>(),0.0));
+  return C_TensorUnaryOperation(*this, bind2nd(greater<double>(),0.0));
 }
 
 Data
 Data::whereNegative() const
 {
-  return escript::unaryOp(*this,bind2nd(less<double>(),0.0));
+  return C_TensorUnaryOperation(*this, bind2nd(less<double>(),0.0));
 }
 
 Data
 Data::whereNonNegative() const
 {
-  return escript::unaryOp(*this,bind2nd(greater_equal<double>(),0.0));
+  return C_TensorUnaryOperation(*this, bind2nd(greater_equal<double>(),0.0));
 }
 
 Data
 Data::whereNonPositive() const
 {
-  return escript::unaryOp(*this,bind2nd(less_equal<double>(),0.0));
+  return C_TensorUnaryOperation(*this, bind2nd(less_equal<double>(),0.0));
 }
 
 Data
 Data::whereZero(double tol) const
 {
   Data dataAbs=abs();
-  return escript::unaryOp(dataAbs,bind2nd(less_equal<double>(),tol));
+  return C_TensorUnaryOperation(dataAbs, bind2nd(less_equal<double>(),tol));
 }
 
 Data
 Data::whereNonZero(double tol) const
 {
   Data dataAbs=abs();
-  return escript::unaryOp(dataAbs,bind2nd(greater<double>(),tol));
+  return C_TensorUnaryOperation(dataAbs, bind2nd(greater<double>(),tol));
 }
 
 Data
@@ -469,12 +492,14 @@ Data::probeInterpolation(const FunctionSpace& functionspace) const
 Data
 Data::gradOn(const FunctionSpace& functionspace) const
 {
+  double blocktimer_start = blocktimer_time();
   if (functionspace.getDomain()!=getDomain())
     throw DataException("Error - gradient cannot be calculated on different domains.");
   DataArrayView::ShapeType grad_shape=getPointDataView().getShape();
   grad_shape.push_back(functionspace.getDim());
   Data out(0.0,grad_shape,functionspace,true);
   getDomain().setToGradient(out,*this);
+  blocktimer_increment("grad()", blocktimer_start);
   return out;
 }
 
@@ -504,9 +529,9 @@ Data::getDataPointShape() const
 
 
 
-const 
+const
 boost::python::numeric::array
-Data:: getValueOfDataPoint(int dataPointNo) 
+Data:: getValueOfDataPoint(int dataPointNo)
 {
   size_t length=0;
   int i, j, k, l;
@@ -551,7 +576,7 @@ Data:: getValueOfDataPoint(int dataPointNo)
        if ((sampleNo >= getNumSamples()) || (sampleNo < 0 )) {
            throw DataException("Error - Data::convertToNumArray: invalid sampleNo.");
        }
-              
+
        //
        // Check a valid data point number has been supplied
        if ((dataPointNoInSample >= getNumDataPointsPerSample()) || (dataPointNoInSample < 0)) {
@@ -560,21 +585,21 @@ Data:: getValueOfDataPoint(int dataPointNo)
        // TODO: global error handling
        // create a view of the data if it is stored locally
        DataArrayView dataPointView = getDataPoint(sampleNo, dataPointNoInSample);
-		
+
        switch( dataPointRank ){
 			case 0 :
 				numArray[0] = dataPointView();
 				break;
-			case 1 :		
+			case 1 :
 				for( i=0; i<dataPointShape[0]; i++ )
 					numArray[i]=dataPointView(i);
 				break;
-			case 2 :		
+			case 2 :
 				for( i=0; i<dataPointShape[0]; i++ )
 					for( j=0; j<dataPointShape[1]; j++)
 						numArray[make_tuple(i,j)]=dataPointView(i,j);
 				break;
-			case 3 :		
+			case 3 :
 				for( i=0; i<dataPointShape[0]; i++ )
 					for( j=0; j<dataPointShape[1]; j++ )
 						for( k=0; k<dataPointShape[2]; k++)
@@ -595,7 +620,7 @@ Data:: getValueOfDataPoint(int dataPointNo)
 
 }
 void
-Data::setValueOfDataPointToPyObject(int dataPointNo, const boost::python::object& py_object) 
+Data::setValueOfDataPointToPyObject(int dataPointNo, const boost::python::object& py_object)
 {
     // this will throw if the value cannot be represented
     boost::python::numeric::array num_array(py_object);
@@ -612,7 +637,7 @@ Data::setValueOfDataPointToArray(int dataPointNo, const boost::python::numeric::
   }
   //
   // check rank
-  if (num_array.getrank()<getDataPointRank()) 
+  if (num_array.getrank()<getDataPointRank())
       throw DataException("Rank of numarray does not match Data object rank");
 
   //
@@ -655,9 +680,9 @@ Data::setValueOfDataPoint(int dataPointNo, const double value)
   }
 }
 
-const 
+const
 boost::python::numeric::array
-Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo) 
+Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo)
 {
   size_t length=0;
   int i, j, k, l, pos;
@@ -712,7 +737,7 @@ Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo)
                 if ((sampleNo >= getNumSamples()) || (sampleNo < 0 )) {
                   throw DataException("Error - Data::convertToNumArray: invalid sampleNo.");
                 }
-              
+
                 //
                 // Check a valid data point number has been supplied
                 if ((dataPointNoInSample >= getNumDataPointsPerSample()) || (dataPointNoInSample < 0)) {
@@ -721,23 +746,23 @@ Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo)
                 // TODO: global error handling
 		// create a view of the data if it is stored locally
 		DataArrayView dataPointView = getDataPoint(sampleNo, dataPointNoInSample);
-		
+
 		// pack the data from the view into tmpData for MPI communication
 		pos=0;
 		switch( dataPointRank ){
 			case 0 :
 				tmpData[0] = dataPointView();
 				break;
-			case 1 :		
+			case 1 :
 				for( i=0; i<dataPointShape[0]; i++ )
 					tmpData[i]=dataPointView(i);
 				break;
-			case 2 :		
+			case 2 :
 				for( i=0; i<dataPointShape[0]; i++ )
 					for( j=0; j<dataPointShape[1]; j++, pos++ )
 						tmpData[pos]=dataPointView(i,j);
 				break;
-			case 3 :		
+			case 3 :
 				for( i=0; i<dataPointShape[0]; i++ )
 					for( j=0; j<dataPointShape[1]; j++ )
 						for( k=0; k<dataPointShape[2]; k++, pos++ )
@@ -753,7 +778,7 @@ Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo)
 		}
             }
 	}
-        #ifdef PASO_MPI	
+        #ifdef PASO_MPI
         // broadcast the data to all other processes
 	MPI_Bcast( tmpData, length, MPI_DOUBLE, procNo, get_MPIComm() );
         #endif
@@ -763,16 +788,16 @@ Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo)
 		case 0 :
 			numArray[0]=tmpData[0];
 			break;
-		case 1 :		
+		case 1 :
 			for( i=0; i<dataPointShape[0]; i++ )
 				numArray[i]=tmpData[i];
 			break;
-		case 2 :		
+		case 2 :
 			for( i=0; i<dataPointShape[0]; i++ )
 				for( j=0; j<dataPointShape[1]; j++ )
 				   numArray[make_tuple(i,j)]=tmpData[i+j*dataPointShape[0]];
 			break;
-		case 3 :		
+		case 3 :
 			for( i=0; i<dataPointShape[0]; i++ )
 				for( j=0; j<dataPointShape[1]; j++ )
 					for( k=0; k<dataPointShape[2]; k++ )
@@ -787,7 +812,7 @@ Data::getValueOfGlobalDataPoint(int procNo, int dataPointNo)
 			break;
 	}
 
-	delete [] tmpData;	
+	delete [] tmpData;
   //
   // return the loaded array
   return numArray;
@@ -801,12 +826,25 @@ Data::integrate() const
   int index;
   int rank = getDataPointRank();
   DataArrayView::ShapeType shape = getDataPointShape();
-
+  int dataPointSize = getDataPointSize();
 
   //
   // calculate the integral values
-  vector<double> integrals(getDataPointSize());
+  vector<double> integrals(dataPointSize);
+  vector<double> integrals_local(dataPointSize);
+#ifdef PASO_MPI
+  AbstractContinuousDomain::asAbstractContinuousDomain(getDomain()).setToIntegrals(integrals_local,*this);
+  // Global sum: use an array instead of a vector because elements of array are guaranteed to be contiguous in memory
+  double *tmp = new double[dataPointSize];
+  double *tmp_local = new double[dataPointSize];
+  for (int i=0; i<dataPointSize; i++) { tmp_local[i] = integrals_local[i]; }
+  MPI_Allreduce( &tmp_local[0], &tmp[0], dataPointSize, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD );
+  for (int i=0; i<dataPointSize; i++) { integrals[i] = tmp[i]; }
+  delete[] tmp;
+  delete[] tmp_local;
+#else
   AbstractContinuousDomain::asAbstractContinuousDomain(getDomain()).setToIntegrals(integrals,*this);
+#endif
 
   //
   // create the numeric array to be returned
@@ -866,56 +904,57 @@ Data::integrate() const
 Data
 Data::sin() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::sin);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::sin);
 }
 
 Data
 Data::cos() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::cos);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::cos);
 }
 
 Data
 Data::tan() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::tan);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::tan);
 }
 
 Data
 Data::asin() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::asin);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::asin);
 }
 
 Data
 Data::acos() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::acos);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::acos);
 }
 
 
 Data
 Data::atan() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::atan);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::atan);
 }
 
 Data
 Data::sinh() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::sinh);
+    return C_TensorUnaryOperation<double (*)(double)>(*this, ::sinh);
+
 }
 
 Data
 Data::cosh() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::cosh);
+    return C_TensorUnaryOperation<double (*)(double)>(*this, ::cosh);
 }
 
 Data
 Data::tanh() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::tanh);
+    return C_TensorUnaryOperation<double (*)(double)>(*this, ::tanh);
 }
 
 
@@ -925,7 +964,7 @@ Data::erf() const
 #ifdef _WIN32
   throw DataException("Error - Data:: erf function is not supported on _WIN32 platforms.");
 #else
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::erf);
+  return C_TensorUnaryOperation(*this, ::erf);
 #endif
 }
 
@@ -933,9 +972,9 @@ Data
 Data::asinh() const
 {
 #ifdef _WIN32
-  return escript::unaryOp(*this,escript::asinh_substitute);
+  return C_TensorUnaryOperation(*this, escript::asinh_substitute);
 #else
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::asinh);
+  return C_TensorUnaryOperation(*this, ::asinh);
 #endif
 }
 
@@ -943,9 +982,9 @@ Data
 Data::acosh() const
 {
 #ifdef _WIN32
-  return escript::unaryOp(*this,escript::acosh_substitute);
+  return C_TensorUnaryOperation(*this, escript::acosh_substitute);
 #else
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::acosh);
+  return C_TensorUnaryOperation(*this, ::acosh);
 #endif
 }
 
@@ -953,40 +992,40 @@ Data
 Data::atanh() const
 {
 #ifdef _WIN32
-  return escript::unaryOp(*this,escript::atanh_substitute);
+  return C_TensorUnaryOperation(*this, escript::atanh_substitute);
 #else
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::atanh);
+  return C_TensorUnaryOperation(*this, ::atanh);
 #endif
 }
 
 Data
 Data::log10() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::log10);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::log10);
 }
 
 Data
 Data::log() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::log);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::log);
 }
 
 Data
 Data::sign() const
 {
-  return escript::unaryOp(*this,escript::fsign);
+  return C_TensorUnaryOperation(*this, escript::fsign);
 }
 
 Data
 Data::abs() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::fabs);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::fabs);
 }
 
 Data
 Data::neg() const
 {
-  return escript::unaryOp(*this,negate<double>());
+  return C_TensorUnaryOperation(*this, negate<double>());
 }
 
 Data
@@ -1001,13 +1040,13 @@ Data::pos() const
 Data
 Data::exp() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::exp);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::exp);
 }
 
 Data
 Data::sqrt() const
 {
-  return escript::unaryOp(*this,(Data::UnaryDFunPtr)::sqrt);
+  return C_TensorUnaryOperation<double (*)(double)>(*this, ::sqrt);
 }
 
 double
@@ -1021,23 +1060,6 @@ Data::Lsup() const
   localValue = algorithm(abs_max_func,0);
 #ifdef PASO_MPI
   MPI_Allreduce( &localValue, &globalValue, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD );
- return globalValue;
-#else
-  return localValue;
-#endif
-}
-
-double
-Data::Linf() const
-{
-  double localValue, globalValue;
-  //
-  // set the initial absolute minimum value to max double
-  AbsMin abs_min_func;
-  localValue = algorithm(abs_min_func,numeric_limits<double>::max());
-
-#ifdef PASO_MPI
-  MPI_Allreduce( &localValue, &globalValue, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD );
   return globalValue;
 #else
   return localValue;
@@ -1126,11 +1148,11 @@ Data::swapaxes(const int axis0, const int axis1) const
      }
      for (int i=0; i<rank; i++) {
        if (i == axis0_tmp) {
-          ev_shape.push_back(s[axis1_tmp]); 
+          ev_shape.push_back(s[axis1_tmp]);
        } else if (i == axis1_tmp) {
-          ev_shape.push_back(s[axis0_tmp]); 
+          ev_shape.push_back(s[axis0_tmp]);
        } else {
-          ev_shape.push_back(s[i]); 
+          ev_shape.push_back(s[i]);
        }
      }
      Data ev(0.,ev_shape,getFunctionSpace());
@@ -1146,7 +1168,7 @@ Data::symmetric() const
      // check input
      DataArrayView::ShapeType s=getDataPointShape();
      if (getDataPointRank()==2) {
-        if(s[0] != s[1]) 
+        if(s[0] != s[1])
            throw DataException("Error - Data::symmetric can only be calculated for rank 2 object with equal first and second dimension.");
      }
      else if (getDataPointRank()==4) {
@@ -1168,7 +1190,7 @@ Data::nonsymmetric() const
      // check input
      DataArrayView::ShapeType s=getDataPointShape();
      if (getDataPointRank()==2) {
-        if(s[0] != s[1]) 
+        if(s[0] != s[1])
            throw DataException("Error - Data::nonsymmetric can only be calculated for rank 2 object with equal first and second dimension.");
         DataArrayView::ShapeType ev_shape;
         ev_shape.push_back(s[0]);
@@ -1272,9 +1294,9 @@ Data::eigenvalues() const
 {
      // check input
      DataArrayView::ShapeType s=getDataPointShape();
-     if (getDataPointRank()!=2) 
+     if (getDataPointRank()!=2)
         throw DataException("Error - Data::eigenvalues can only be calculated for rank 2 object.");
-     if(s[0] != s[1]) 
+     if(s[0] != s[1])
         throw DataException("Error - Data::eigenvalues can only be calculated for object with equal first and second dimension.");
      // create return
      DataArrayView::ShapeType ev_shape(1,s[0]);
@@ -1288,9 +1310,9 @@ const boost::python::tuple
 Data::eigenvalues_and_eigenvectors(const double tol) const
 {
      DataArrayView::ShapeType s=getDataPointShape();
-     if (getDataPointRank()!=2) 
+     if (getDataPointRank()!=2)
         throw DataException("Error - Data::eigenvalues and eigenvectors can only be calculated for rank 2 object.");
-     if(s[0] != s[1]) 
+     if(s[0] != s[1])
         throw DataException("Error - Data::eigenvalues and eigenvectors can only be calculated for object with equal first and second dimension.");
      // create return
      DataArrayView::ShapeType ev_shape(1,s[0]);
@@ -1360,7 +1382,7 @@ Data::calc_minGlobalDataPoint(int& ProcNo,
 	int lowProc = 0;
 	double *globalMins = new double[get_MPISize()+1];
 	int error = MPI_Gather ( &next, 1, MPI_DOUBLE, globalMins, 1, MPI_DOUBLE, 0, get_MPIComm() );
-	
+
 	if( get_MPIRank()==0 ){
 		next = globalMins[lowProc];
 		for( i=1; i<get_MPISize(); i++ )
@@ -1412,6 +1434,12 @@ Data::operator+=(const boost::python::object& right)
 {
   Data tmp(right,getFunctionSpace(),false);
   binaryOp(tmp,plus<double>());
+  return (*this);
+}
+Data&
+Data::operator=(const Data& other)
+{
+  copy(other);
   return (*this);
 }
 
@@ -1486,34 +1514,15 @@ Data::powO(const boost::python::object& right) const
 Data
 Data::powD(const Data& right) const
 {
-  Data result;
-  if (getDataPointRank()<right.getDataPointRank()) {
-     result.copy(right); 
-     result.binaryOp(*this,escript::rpow);
-  } else {
-     result.copy(*this);
-     result.binaryOp(right,(Data::BinaryDFunPtr)::pow);
-  }
-  return result;
+  return C_TensorBinaryOperation<double (*)(double, double)>(*this, right, ::pow);
 }
-
 
 //
 // NOTE: It is essential to specify the namespace this operator belongs to
 Data
 escript::operator+(const Data& left, const Data& right)
 {
-  Data result;
-  //
-  // perform a deep copy
-  if (left.getDataPointRank()<right.getDataPointRank()) {
-     result.copy(right);
-     result+=left;
-  } else {
-     result.copy(left);
-     result+=right;
-  }
-  return result;
+  return C_TensorBinaryOperation(left, right, plus<double>());
 }
 
 //
@@ -1521,17 +1530,7 @@ escript::operator+(const Data& left, const Data& right)
 Data
 escript::operator-(const Data& left, const Data& right)
 {
-  Data result;
-  //
-  // perform a deep copy
-  if (left.getDataPointRank()<right.getDataPointRank()) {
-     result=right.neg();
-     result+=left;
-  } else {
-     result.copy(left);
-     result-=right;
-  }
-  return result;
+  return C_TensorBinaryOperation(left, right, minus<double>());
 }
 
 //
@@ -1539,17 +1538,7 @@ escript::operator-(const Data& left, const Data& right)
 Data
 escript::operator*(const Data& left, const Data& right)
 {
-  Data result;
-  //
-  // perform a deep copy
-  if (left.getDataPointRank()<right.getDataPointRank()) {
-     result.copy(right);
-     result*=left;
-  } else {
-     result.copy(left);
-     result*=right;
-  }
-  return result;
+  return C_TensorBinaryOperation(left, right, multiplies<double>());
 }
 
 //
@@ -1557,17 +1546,7 @@ escript::operator*(const Data& left, const Data& right)
 Data
 escript::operator/(const Data& left, const Data& right)
 {
-  Data result;
-  //
-  // perform a deep copy
-  if (left.getDataPointRank()<right.getDataPointRank()) {
-     result=right.oneOver();
-     result*=left;
-  } else {
-     result.copy(left);
-     result/=right;
-  }
-  return result;
+  return C_TensorBinaryOperation(left, right, divides<double>());
 }
 
 //
@@ -1682,7 +1661,7 @@ escript::operator/(const boost::python::object& left, const Data& right)
 /* TODO */
 /* global reduction */
 Data
-Data::getItem(const boost::python::object& key) const 
+Data::getItem(const boost::python::object& key) const
 {
   const DataArrayView& view=getPointDataView();
 
@@ -1713,8 +1692,6 @@ Data::setItemO(const boost::python::object& key,
   setItemD(key,tempData);
 }
 
-/* TODO */
-/* global reduction */
 void
 Data::setItemD(const boost::python::object& key,
                const Data& value)
@@ -1732,8 +1709,6 @@ Data::setItemD(const boost::python::object& key,
   }
 }
 
-/* TODO */
-/* global reduction */
 void
 Data::setSlice(const Data& value,
                const DataArrayView::RegionType& region)
@@ -1777,7 +1752,7 @@ Data::typeMatchRight(const Data& right)
 
 void
 Data::setTaggedValueByName(std::string name,
-                           const boost::python::object& value) 
+                           const boost::python::object& value)
 {
      if (getFunctionSpace().getDomain().isValidTagName(name)) {
         int tagKey=getFunctionSpace().getDomain().getTag(name);
@@ -1793,19 +1768,26 @@ Data::setTaggedValue(int tagKey,
   }
   //
   // Ensure underlying data object is of type DataTagged
-  tag();
+  if (isConstant()) tag();
 
-  if (!isTagged()) {
-    throw DataException("Error - DataTagged conversion failed!!");
+  numeric::array asNumArray(value);
+
+
+  // extract the shape of the numarray
+  DataArrayView::ShapeType tempShape;
+  for (int i=0; i < asNumArray.getrank(); i++) {
+    tempShape.push_back(extract<int>(asNumArray.getshape()[i]));
   }
 
-  //
-  // Construct DataArray from boost::python::object input value
-  DataArray valueDataArray(value);
+  // get the space for the data vector
+  int len = DataArrayView::noValues(tempShape);
+  DataVector temp_data(len, 0.0, len);
+  DataArrayView temp_dataView(temp_data, tempShape);
+  temp_dataView.copy(asNumArray);
 
   //
   // Call DataAbstract::setTaggedValue
-  m_data->setTaggedValue(tagKey,valueDataArray.getView());
+  m_data->setTaggedValue(tagKey,temp_dataView);
 }
 
 void
@@ -1817,12 +1799,8 @@ Data::setTaggedValueFromCPP(int tagKey,
   }
   //
   // Ensure underlying data object is of type DataTagged
-  tag();
+  if (isConstant()) tag();
 
-  if (!isTagged()) {
-    throw DataException("Error - DataTagged conversion failed!!");
-  }
-                                                                                                               
   //
   // Call DataAbstract::setTaggedValue
   m_data->setTaggedValue(tagKey,value);
@@ -1831,7 +1809,7 @@ Data::setTaggedValueFromCPP(int tagKey,
 int
 Data::getTagNumber(int dpno)
 {
-  return m_data->getTagNumber(dpno);
+  return getFunctionSpace().getTagFromSampleNo(dpno);
 }
 
 void
@@ -2183,7 +2161,6 @@ escript::C_GeneralTensorProduct(Data& arg_0,
 {
   // General tensor product: res(SL x SR) = arg_0(SL x SM) * arg_1(SM x SR)
   // SM is the product of the last axis_offset entries in arg_0.getShape().
-
 
   // Interpolate if necessary and find an appropriate function space
   Data arg_0_Z, arg_1_Z;
@@ -2545,10 +2522,10 @@ Data::borrowData() const
 /* Member functions specific to the MPI implementation */
 
 void
-Data::print() 
+Data::print()
 {
   int i,j;
-  
+
   printf( "Data is %dX%d\n", getNumSamples(), getNumDataPointsPerSample() );
   for( i=0; i<getNumSamples(); i++ )
   {
@@ -2597,7 +2574,7 @@ Data::get_MPIRank() const
 
 MPI_Comm
 Data::get_MPIComm() const
-{ 
+{
 #ifdef PASO_MPI
 	return MPI_COMM_WORLD;
 #else

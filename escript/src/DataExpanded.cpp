@@ -1,22 +1,24 @@
-// $Id$
-/*
- ************************************************************
- *          Copyright 2006 by ACcESS MNRF                   *
- *                                                          *
- *              http://www.access.edu.au                    *
- *       Primary Business: Queensland, Australia            *
- *  Licensed under the Open Software License version 3.0    *
- *     http://www.opensource.org/licenses/osl-3.0.php       *
- *                                                          *
- ************************************************************
-*/
+
+/* $Id$ */
+
+/*******************************************************
+ *
+ *           Copyright 2003-2007 by ACceSS MNRF
+ *       Copyright 2007 by University of Queensland
+ *
+ *                http://esscc.uq.edu.au
+ *        Primary Business: Queensland, Australia
+ *  Licensed under the Open Software License version 3.0
+ *     http://www.opensource.org/licenses/osl-3.0.php
+ *
+ *******************************************************/
 
 #include "DataExpanded.h"
 #include "DataException.h"
 #include "DataConstant.h"
 #include "DataTagged.h"
 #ifdef USE_NETCDF
-#include "netcdfcpp.h"
+#include <netcdfcpp.h>
 #endif
 
 #include <boost/python/extract.hpp>
@@ -158,14 +160,14 @@ DataExpanded::~DataExpanded()
 }
 
 DataAbstract*
-DataExpanded::getSlice(const DataArrayView::RegionType& region) const 
+DataExpanded::getSlice(const DataArrayView::RegionType& region) const
 {
   return new DataExpanded(*this,region);
 }
 
 void
 DataExpanded::setSlice(const DataAbstract* value,
-                       const DataArrayView::RegionType& region) 
+                       const DataArrayView::RegionType& region)
 {
   const DataExpanded* tempDataExp=dynamic_cast<const DataExpanded*>(value);
   if (tempDataExp==0) {
@@ -201,7 +203,7 @@ DataExpanded::setSlice(const DataAbstract* value,
 }
 
 void
-DataExpanded::copy(const DataArrayView& value) 
+DataExpanded::copy(const DataArrayView& value)
 {
   //
   // copy a single value to every data point in this object
@@ -211,31 +213,41 @@ DataExpanded::copy(const DataArrayView& value)
   #pragma omp parallel for private(i,j) schedule(static)
   for (i=0;i<nRows;i++) {
     for (j=0;j<nCols;j++) {
-      // NOTE: An exception may be thown from this call if 
+      // NOTE: An exception may be thown from this call if
       // DOASSERT is on which of course will play
       // havoc with the omp threads. Run single threaded
-      // if using DOASSERT. 
-      getPointDataView().copy(m_data.index(i,j),value);
+      // if using DOASSERT.
+      getPointDataView().copy(getPointOffset(i,j),value);
     }
   }
 }
 
 void
-DataExpanded::copy(const boost::python::numeric::array& value) 
+DataExpanded::copy(const boost::python::numeric::array& value)
 {
-  //
-  // first convert the numarray into a DataArray object
-  DataArray temp(value);
+
+  // extract the shape of the numarray
+  DataArrayView::ShapeType tempShape;
+  for (int i=0; i < value.getrank(); i++) {
+    tempShape.push_back(extract<int>(value.getshape()[i]));
+  }
+
+  // get the space for the data vector
+  int len = DataArrayView::noValues(tempShape);
+  DataVector temp_data(len, 0.0, len);
+  DataArrayView temp_dataView(temp_data, tempShape);
+  temp_dataView.copy(value);
+
   //
   // check the input shape matches this shape
-  if (!getPointDataView().checkShape(temp.getView().getShape())) {
+  if (!getPointDataView().checkShape(temp_dataView.getShape())) {
     throw DataException(getPointDataView().createShapeErrorMessage(
                         "Error - (DataExpanded) Cannot copy due to shape mismatch.",
-                        temp.getView().getShape()));
+                        temp_dataView.getShape()));
   }
   //
   // now copy over the data
-  copy(temp.getView());
+  copy(temp_dataView);
 }
 
 void
@@ -262,7 +274,7 @@ DataExpanded::toString() const
   DataArrayView tempView(getPointDataView().getData(),getPointDataView().getShape(),getPointDataView().getOffset());
   for (int i=0;i<m_data.getNumRows();i++) {
     for (int j=0;j<m_data.getNumCols();j++) {
-      tempView.setOffset(m_data.index(i,j));
+      tempView.setOffset(getPointOffset(i,j));
       stringstream suffix;
       suffix << "( id: " << i << ", ref: " << fs.getReferenceIDOfSample(i) << ", pnt: " << j << ")";
       temp << tempView.toString(suffix.str());
@@ -271,7 +283,7 @@ DataExpanded::toString() const
       }
     }
   }
-  return string(temp.str());
+  return temp.str();
 }
 
 DataArrayView::ValueType::size_type
@@ -285,7 +297,7 @@ DataArrayView
 DataExpanded::getDataPoint(int sampleNo,
                            int dataPointNo)
 {
-  DataArrayView temp(m_data.getData(),getPointDataView().getShape(),m_data.index(sampleNo,dataPointNo));
+  DataArrayView temp(m_data.getData(),getPointDataView().getShape(),getPointOffset(sampleNo,dataPointNo));
   return temp;
 }
 
@@ -309,7 +321,7 @@ DataExpanded::extractData(ifstream& archiveFile,
   return(m_data.extractData(archiveFile, noValues));
 }
 
-void 
+void
 DataExpanded::copyToDataPoint(const int sampleNo, const int dataPointNo, const double value) {
   //
   // Get the number of samples and data-points per sample.
@@ -356,10 +368,10 @@ DataExpanded::copyToDataPoint(const int sampleNo, const int dataPointNo, const d
              }
            }
          }
-     } 
+     }
   }
 }
-void 
+void
 DataExpanded::copyToDataPoint(const int sampleNo, const int dataPointNo, const boost::python::numeric::array& value) {
   //
   // Get the number of samples and data-points per sample.
@@ -410,7 +422,7 @@ DataExpanded::copyToDataPoint(const int sampleNo, const int dataPointNo, const b
              }
            }
          }
-     } 
+     }
   }
 }
 void
@@ -707,4 +719,32 @@ DataExpanded::dump(const std::string fileName) const
    throw DataException("Error - DataExpanded:: dump is not configured with netCDF. Please contact your installation manager.");
    #endif
 }
+
+void
+DataExpanded::setTaggedValue(int tagKey,
+                             const DataArrayView& value)
+{
+  int numSamples = getNumSamples();
+  int numDataPointsPerSample = getNumDPPSample();
+  int sampleNo,dataPointNo, i;
+  DataArrayView& thisView=getPointDataView();
+  DataArrayView::ValueType::size_type n = thisView.noValues();
+  double* p,*in=&(value.getData()[0]);
+  
+  if (value.noValues() != n) {
+    throw DataException("Error - DataExpanded::setTaggedValue: number of input values does not match number of values per data points.");
+  }
+
+  #pragma omp parallel for private(sampleNo,dataPointNo,p,i) schedule(static)
+  for (sampleNo = 0; sampleNo < numSamples; sampleNo++) {
+    if (getFunctionSpace().getTagFromSampleNo(sampleNo) == tagKey ) {
+        for (dataPointNo = 0; dataPointNo < numDataPointsPerSample; dataPointNo++) {
+            p=&(m_data[getPointOffset(sampleNo,dataPointNo)]);
+            for (int i=0; i<n ;++i) p[i]=in[i];
+        }
+    }
+  }
+}
+
+
 }  // end of namespace

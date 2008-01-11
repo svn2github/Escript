@@ -1,7 +1,7 @@
 from esys.pyvisi import DataCollector, Scene, StreamLine, GlobalPosition
 from esys.pyvisi import Camera
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -61,5 +61,7 @@ class TestStreamLine(unittest.TestCase, TestStreamLineWithLazyEvaluation):
 if __name__ == '__main__':
 	suite = unittest.TestSuite()
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStreamLine))
-	unittest.TextTestRunner(verbosity=2).run(suite)
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)
+
 

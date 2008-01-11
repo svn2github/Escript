@@ -1,6 +1,6 @@
 from esys.pyvisi import DataCollector, Scene, Velocity
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -125,4 +125,6 @@ if __name__ == '__main__':
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestVelocity2DArrowVectorColor))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestVelocity2DArrowScalarColor))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestVelocity3DSecondOrder))
-	unittest.TextTestRunner(verbosity=2).run(suite)
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)
+

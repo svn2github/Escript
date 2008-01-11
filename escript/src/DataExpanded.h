@@ -1,15 +1,17 @@
-// $Id$
-/* 
- ************************************************************
- *          Copyright 2006 by ACcESS MNRF                   *
- *                                                          *
- *              http://www.access.edu.au                    *
- *       Primary Business: Queensland, Australia            *
- *  Licensed under the Open Software License version 3.0    *
- *     http://www.opensource.org/licenses/osl-3.0.php       *
- *                                                          *
- ************************************************************
-*/
+
+/* $Id$ */
+
+/*******************************************************
+ *
+ *           Copyright 2003-2007 by ACceSS MNRF
+ *       Copyright 2007 by University of Queensland
+ *
+ *                http://esscc.uq.edu.au
+ *        Primary Business: Queensland, Australia
+ *  Licensed under the Open Software License version 3.0
+ *     http://www.opensource.org/licenses/osl-3.0.php
+ *
+ *******************************************************/
 
 #if !defined escript_DataExpanded_20040323_H
 #define escript_DataExpanded_20040323_H
@@ -254,6 +256,22 @@ class DataExpanded : public DataAbstract {
   int
   extractData(std::ifstream& archiveFile,
               const DataArrayView::ValueType::size_type noValues);
+
+  /**
+     \brief
+     setTaggedValue
+
+     Description:
+     uses tag to set a new value
+
+     \param tagKey - Input - Integer key.
+     \param value - Input - Single DataArrayView value to be assigned to the tag.
+  */
+  ESCRIPT_DLL_API
+  virtual
+  void
+  setTaggedValue(int tagKey,
+                 const DataArrayView& value);
 
   /**
      \brief

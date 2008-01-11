@@ -1,7 +1,7 @@
 from esys.pyvisi import DataCollector, Scene, Map, Image, Image, ImageReader
 from esys.pyvisi import GlobalPosition
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -74,5 +74,6 @@ class TestImageOnAMap(unittest.TestCase, TestImage):
 if __name__ == '__main__':
 	suite = unittest.TestSuite()
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestImageOnAMap))
-	unittest.TextTestRunner(verbosity=2).run(suite)
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)
 

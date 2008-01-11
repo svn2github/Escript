@@ -1,7 +1,7 @@
 from esys.pyvisi import DataCollector, Scene, Ellipsoid, EllipsoidOnPlaneCut
 from esys.pyvisi import EllipsoidOnPlaneClip, Camera
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -121,5 +121,5 @@ if __name__ == '__main__':
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestEllipsoidScaleResolution))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestEllipsoidOnPlaneCut))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestEllipsoidOnPlaneClip))
-	unittest.TextTestRunner(verbosity=2).run(suite)
-
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)

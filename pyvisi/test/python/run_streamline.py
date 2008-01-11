@@ -1,6 +1,6 @@
 from esys.pyvisi import DataCollector, Scene, StreamLine, GlobalPosition
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -123,5 +123,6 @@ if __name__ == '__main__':
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStreamLinePointSource))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStreamLineModule))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestStreamLineTube))
-	unittest.TextTestRunner(verbosity=2).run(suite)
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)
 

@@ -1,4 +1,18 @@
+#
 # $Id$
+#
+#######################################################
+#
+#           Copyright 2003-2007 by ACceSS MNRF
+#       Copyright 2007 by University of Queensland
+#
+#                http://esscc.uq.edu.au
+#        Primary Business: Queensland, Australia
+#  Licensed under the Open Software License version 3.0
+#     http://www.opensource.org/licenses/osl-3.0.php
+#
+#######################################################
+#
 
 """
 Provides some tools related to PDEs. 
@@ -32,6 +46,7 @@ import escript
 import linearPDEs
 import numarray
 import util
+import math
 
 class TimeIntegrationManager:
   """
@@ -130,6 +145,7 @@ class Projector:
     self.__pde.setSymmetryOn()
     self.__pde.setReducedOrderTo(reduce)
     self.__pde.setValue(D = 1.)
+    return
 
   def __call__(self, input_data):
     """
@@ -392,6 +408,219 @@ class Locator:
         else:
            return data
 
+class SolverSchemeException(Exception):
+   """
+   exceptions thrown by solvers 
+   """
+   pass
+
+class IndefinitePreconditioner(SolverSchemeException):
+   """
+   the preconditioner is not positive definite.
+   """
+   pass
+class MaxIterReached(SolverSchemeException):
+   """
+   maxium number of iteration steps is reached.
+   """
+   pass
+class IterationBreakDown(SolverSchemeException):
+   """
+   iteration scheme econouters an incurable breakdown.
+   """
+   pass
+class NegativeNorm(SolverSchemeException):
+   """
+   a norm calculation returns a negative norm.
+   """
+   pass
+
+class IterationHistory(object):
+   """
+   The IterationHistory class is used to define a stopping criterium. It keeps track of the 
+   residual norms. The stoppingcriterium indicates termination if the residual norm has been reduced by 
+   a given tolerance.
+   """
+   def __init__(self,tolerance=math.sqrt(util.EPSILON),verbose=False):
+      """
+      Initialization
+
+      @param tolerance: tolerance
+      @type tolerance: positive C{float}
+      @param verbose: switches on the printing out some information
+      @type verbose: C{bool}
+      """
+      if not tolerance>0.:
+          raise ValueError,"tolerance needs to be positive."
+      self.tolerance=tolerance
+      self.verbose=verbose
+      self.history=[]
+   def stoppingcriterium(self,norm_r,r,x):
+       """
+       returns True if the C{norm_r} is C{tolerance}*C{norm_r[0]} where C{norm_r[0]}  is the residual norm at the first call.
+
+       
+       @param norm_r: current residual norm
+       @type norm_r: non-negative C{float}
+       @param r: current residual (not used)
+       @param x: current solution approximation (not used)
+       @return: C{True} is the stopping criterium is fullfilled. Otherwise C{False} is returned.
+       @rtype: C{bool}
+
+       """
+       self.history.append(norm_r)
+       if self.verbose: print "iter: %s:  inner(rhat,r) = %e"%(len(self.history)-1, self.history[-1])
+       return self.history[-1]<=self.tolerance * self.history[0]
+
+def PCG(b, Aprod, Msolve, bilinearform, stoppingcriterium, x=None, iter_max=100):
+   """
+   Solver for 
+
+   M{Ax=b}
+
+   with a symmetric and positive definite operator A (more details required!). 
+   It uses the conjugate gradient method with preconditioner M providing an approximation of A. 
+
+   The iteration is terminated if the C{stoppingcriterium} function return C{True}.
+
+   For details on the preconditioned conjugate gradient method see the book:
+
+   Templates for the Solution of Linear Systems by R. Barrett, M. Berry, 
+   T.F. Chan, J. Demmel, J. Donato, J. Dongarra, V. Eijkhout, R. Pozo, 
+   C. Romine, and H. van der Vorst.
+
+   @param b: the right hand side of the liner system. C{b} is altered.
+   @type b: any object supporting inplace add (x+=y) and scaling (x=scalar*y)
+   @param Aprod: returns the value Ax
+   @type Aprod: function C{Aprod(x)} where C{x} is of the same object like argument C{x}. The returned object needs to be of the same type like argument C{b}.
+   @param Msolve: solves Mx=r 
+   @type Msolve: function C{Msolve(r)} where C{r} is of the same type like argument C{b}. The returned object needs to be of the same 
+type like argument C{x}.
+   @param bilinearform: inner product C{<x,r>} 
+   @type bilinearform: function C{bilinearform(x,r)} where C{x} is of the same type like argument C{x} and C{r} is . The returned value is a C{float}.
+   @param stoppingcriterium: function which returns True if a stopping criterium is meet. C{stoppingcriterium} has the arguments C{norm_r}, C{r} and C{x} giving the current norm of the residual (=C{sqrt(bilinearform(Msolve(r),r)}), the current residual and the current solution approximation. C{stoppingcriterium} is called in each iteration step.
+   @type stoppingcriterium: function that returns C{True} or C{False}
+   @param x: an initial guess for the solution. If no C{x} is given 0*b is used.
+   @type x: any object supporting inplace add (x+=y) and scaling (x=scalar*y)
+   @param iter_max: maximum number of iteration steps.
+   @type iter_max: C{int}
+   @return: the solution approximation and the corresponding residual
+   @rtype: C{tuple} 
+   @warning: C{b} and C{x} are altered.
+   """
+   iter=0
+   if x==None:
+      x=0*b
+   else:
+      b += (-1)*Aprod(x) 
+   r=b
+   rhat=Msolve(r)
+   d = rhat 
+   rhat_dot_r = bilinearform(rhat, r)
+   if rhat_dot_r<0: raise NegativeNorm,"negative norm."
+
+   while not stoppingcriterium(math.sqrt(rhat_dot_r),r,x):
+       iter+=1
+       if iter  >= iter_max: raise MaxIterReached,"maximum number of %s steps reached."%iter_max
+
+       q=Aprod(d)
+       alpha = rhat_dot_r / bilinearform(d, q)
+       x += alpha * d
+       r += (-alpha) * q
+
+       rhat=Msolve(r)
+       rhat_dot_r_new = bilinearform(rhat, r)
+       beta = rhat_dot_r_new / rhat_dot_r
+       rhat+=beta * d
+       d=rhat
+
+       rhat_dot_r = rhat_dot_r_new
+       if rhat_dot_r<0: raise NegativeNorm,"negative norm."
+
+   return x,r
+
+class ArithmeticTuple(object):
+   """
+   tuple supporting inplace update x+=y and scaling x=a*y where x,y is an ArithmeticTuple and a is a float.
+
+   example of usage:
+
+   from esys.escript import Data
+   from numarray import array
+   a=Data(...)
+   b=array([1.,4.])
+   x=ArithmeticTuple(a,b)
+   y=5.*x
+
+   """
+   def __init__(self,*args):
+       """
+       initialize object with elements args.
+
+       @param args: tuple of object that support implace add (x+=y) and scaling (x=a*y)
+       """
+       self.__items=list(args)
+
+   def __len__(self):
+       """
+       number of items
+
+       @return: number of items
+       @rtype: C{int}
+       """
+       return len(self.__items)
+
+   def __getitem__(self,index):
+       """
+       get an item
+
+       @param index: item to be returned
+       @type index: C{int}
+       @return: item with index C{index}
+       """
+       return self.__items.__getitem__(index)
+
+   def __mul__(self,other):
+       """
+       scaling from the right 
+
+       @param other: scaling factor
+       @type other: C{float}
+       @return: itemwise self*other
+       @rtype: L{ArithmeticTuple}
+       """
+       out=[]
+       for i in range(len(self)):
+           out.append(self[i]*other)
+       return ArithmeticTuple(*tuple(out))
+
+   def __rmul__(self,other):
+       """
+       scaling from the left
+
+       @param other: scaling factor
+       @type other: C{float}
+       @return: itemwise other*self
+       @rtype: L{ArithmeticTuple}
+       """
+       out=[]
+       for i in range(len(self)):
+           out.append(other*self[i])
+       return ArithmeticTuple(*tuple(out))
+
+   def __iadd__(self,other):
+       """
+       in-place add of other to self
+
+       @param other: increment
+       @type other: C{ArithmeticTuple}
+       """
+       if len(self) != len(other):
+           raise ValueError,"tuple length must match."
+       for i in range(len(self)):
+           self.__items[i]+=other[i]
+       return self
+
 class SaddlePointProblem(object):
    """
    This implements a solver for a saddlepoint problem
@@ -621,4 +850,28 @@ class SaddlePointProblem(object):
 #
 #      return u,p
           
-# vim: expandtab shiftwidth=4:
+def MaskFromBoundaryTag(function_space,*tags):
+   """
+   create a mask on the given function space which one for samples 
+   that touch the boundary tagged by tags.
+
+   usage: m=MaskFromBoundaryTag(Solution(domain),"left", "right")
+
+   @param function_space: a given function space 
+   @type function_space: L{escript.FunctionSpace}
+   @param tags: boundray tags
+   @type tags: C{str}
+   @return: a mask which marks samples used by C{function_space} that are touching the
+            boundary tagged by any of the given tags.
+   @rtype: L{escript.Data} of rank 0
+   """
+   pde=linearPDEs.LinearPDE(function_space.getDomain(),numEquations=1, numSolutions=1)
+   d=escript.Scalar(0.,escript.FunctionOnBoundary(function_space.getDomain()))
+   for t in tags: d.setTaggedValue(t,1.)
+   pde.setValue(y=d)
+   out=util.whereNonZero(pde.getRightHandSide())
+   if out.getFunctionSpace() == function_space:
+      return out
+   else:
+      return util.whereNonZero(util.interpolate(out,function_space))
+

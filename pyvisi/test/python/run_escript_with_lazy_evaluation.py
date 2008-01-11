@@ -6,7 +6,7 @@ from esys.finley import Rectangle, Brick
 from numarray import identity,zeros,ones
 from esys.pyvisi import Scene, DataCollector, Map, Velocity, Ellipsoid, Camera
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -269,5 +269,6 @@ if __name__ == '__main__':
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestEscriptMap))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestEscriptVelocity))
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestEscriptEllipsoid))
-	unittest.TextTestRunner(verbosity=2).run(suite)
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)
 

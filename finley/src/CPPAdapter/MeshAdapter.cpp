@@ -1,25 +1,28 @@
-// $Id$
-/*
- ******************************************************************************
- *                                                                            *
- *       COPYRIGHT  ACcESS 2004 -  All Rights Reserved                        *
- *                                                                            *
- * This software is the property of ACcESS. No part of this code              *
- * may be copied in any form or by any means without the expressed written    *
- * consent of ACcESS.  Copying, use or modification of this software          *
- * by any unauthorised person is illegal unless that person has a software    *
- * license agreement with ACcESS.                                             *
- *                                                                            *
- ******************************************************************************
-*/
 
-#ifdef PASO_MPI
-#include <mpi.h>
-#endif
+/* $Id$ */
+
+/*******************************************************
+ *
+ *           Copyright 2003-2007 by ACceSS MNRF
+ *       Copyright 2007 by University of Queensland
+ *
+ *                http://esscc.uq.edu.au
+ *        Primary Business: Queensland, Australia
+ *  Licensed under the Open Software License version 3.0
+ *     http://www.opensource.org/licenses/osl-3.0.php
+ *
+ *******************************************************/
+
 #include "MeshAdapter.h"
-
 #include "escript/Data.h"
 #include "escript/DataFactory.h"
+#ifdef USE_NETCDF
+#include <netcdfcpp.h>
+#endif
+extern "C" {
+#include "escript/blocktimer.h"
+}
+#include <vector>
 
 using namespace std;
 using namespace escript;
@@ -47,7 +50,7 @@ MeshAdapter::MeshAdapter(Finley_Mesh* finleyMesh)
 {
   setFunctionSpaceTypeNames();
   //
-  // need to use a null_deleter as Finley_Mesh_dealloc deletes the pointer
+  // need to use a null_deleter as Finley_Mesh_free deletes the pointer
   // for us.
   m_finleyMesh.reset(finleyMesh,null_deleter());
 }
@@ -66,11 +69,19 @@ MeshAdapter::~MeshAdapter()
   // I hope the case for the pointer being zero has been taken care of.
   //  cout << "In MeshAdapter destructor." << endl;
   if (m_finleyMesh.unique()) {
-    //   cout << "Calling dealloc." << endl;
-    Finley_Mesh_dealloc(m_finleyMesh.get());
-    //   cout << "Finished dealloc." << endl;
+    Finley_Mesh_free(m_finleyMesh.get());
   }
 }
+
+int MeshAdapter::getMPISize() const
+{
+   return m_finleyMesh.get()->MPIInfo->size;
+}
+int MeshAdapter::getMPIRank() const
+{
+   return m_finleyMesh.get()->MPIInfo->rank;
+}
+
 
 Finley_Mesh* MeshAdapter::getFinley_Mesh() const {
    return m_finleyMesh.get();
@@ -85,9 +96,433 @@ void MeshAdapter::write(const std::string& fileName) const
   TMPMEMFREE(fName);
 }
 
+void MeshAdapter::Print_Mesh_Info(const bool full=false) const
+{
+  Finley_PrintMesh_Info(m_finleyMesh.get(), full);
+}
+
+void MeshAdapter::dump(const std::string& fileName) const
+{
+#ifdef USE_NETCDF
+   const NcDim* ncdims[12];
+   NcVar *ids, *data;
+   int *int_ptr;
+   Finley_Mesh *mesh = m_finleyMesh.get();
+   Finley_TagMap* tag_map;
+   int num_Tags = 0;
+   int mpi_size				= mesh->MPIInfo->size;
+   int mpi_rank				= mesh->MPIInfo->rank;
+   int numDim				= mesh->Nodes->numDim;
+   int numNodes				= mesh->Nodes->numNodes;
+   int num_Elements			= mesh->Elements->numElements;
+   int num_FaceElements			= mesh->FaceElements->numElements;
+   int num_ContactElements		= mesh->ContactElements->numElements;
+   int num_Points			= mesh->Points->numElements;
+   int num_Elements_numNodes		= mesh->Elements->numNodes;
+   int num_FaceElements_numNodes	= mesh->FaceElements->numNodes;
+   int num_ContactElements_numNodes	= mesh->ContactElements->numNodes;
+   char *newFileName = Paso_MPI_appendRankToFileName(strdup(fileName.c_str()), mpi_size, mpi_rank);
+
+   /* Figure out how much storage is required for tags */
+   tag_map = mesh->TagMap;
+   if (tag_map) {
+     while (tag_map) {
+	num_Tags++;
+        tag_map=tag_map->next;
+     }
+   }
+
+   // NetCDF error handler
+   NcError err(NcError::verbose_nonfatal);
+   // Create the file.
+   NcFile dataFile(newFileName, NcFile::Replace);
+   // check if writing was successful
+   if (!dataFile.is_valid())
+        throw DataException("Error - MeshAdapter::dump: opening of NetCDF file for output failed: " + *newFileName);
+
+   // Define dimensions (num_Elements and dim_Elements are identical, dim_Elements only appears if > 0)
+   if (! (ncdims[0] = dataFile.add_dim("numNodes", numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension numNodes to netCDF file failed: " + *newFileName);
+   if (! (ncdims[1] = dataFile.add_dim("numDim", numDim)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension numDim to netCDF file failed: " + *newFileName);
+   if (! (ncdims[2] = dataFile.add_dim("mpi_size_plus_1", mpi_size+1)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension mpi_size to netCDF file failed: " + *newFileName);
+   if (num_Elements>0)
+      if (! (ncdims[3] = dataFile.add_dim("dim_Elements", num_Elements)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_Elements to netCDF file failed: " + *newFileName);
+   if (num_FaceElements>0)
+      if (! (ncdims[4] = dataFile.add_dim("dim_FaceElements", num_FaceElements)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_FaceElements to netCDF file failed: " + *newFileName);
+   if (num_ContactElements>0)
+      if (! (ncdims[5] = dataFile.add_dim("dim_ContactElements", num_ContactElements)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_ContactElements to netCDF file failed: " + *newFileName);
+   if (num_Points>0)
+      if (! (ncdims[6] = dataFile.add_dim("dim_Points", num_Points)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_Points to netCDF file failed: " + *newFileName);
+   if (num_Elements>0)
+      if (! (ncdims[7] = dataFile.add_dim("dim_Elements_Nodes", num_Elements_numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_Elements_Nodes to netCDF file failed: " + *newFileName);
+   if (num_FaceElements>0)
+      if (! (ncdims[8] = dataFile.add_dim("dim_FaceElements_numNodes", num_FaceElements_numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_FaceElements_numNodes to netCDF file failed: " + *newFileName);
+   if (num_ContactElements>0)
+      if (! (ncdims[9] = dataFile.add_dim("dim_ContactElements_numNodes", num_ContactElements_numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_ContactElements_numNodes to netCDF file failed: " + *newFileName);
+   if (num_Tags>0)
+      if (! (ncdims[10] = dataFile.add_dim("dim_Tags", num_Tags)) )
+        throw DataException("Error - MeshAdapter::dump: appending dimension dim_Tags to netCDF file failed: " + *newFileName);
+
+   // Attributes: MPI size, MPI rank, Name, order, reduced_order
+   if (!dataFile.add_att("mpi_size", mpi_size) )
+        throw DataException("Error - MeshAdapter::dump: appending mpi_size to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("mpi_rank", mpi_rank) )
+        throw DataException("Error - MeshAdapter::dump: appending mpi_rank to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("Name",mesh->Name) )
+        throw DataException("Error - MeshAdapter::dump: appending Name to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("numDim",numDim) )
+        throw DataException("Error - MeshAdapter::dump: appending order to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("order",mesh->order) )
+        throw DataException("Error - MeshAdapter::dump: appending order to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("reduced_order",mesh->reduced_order) )
+        throw DataException("Error - MeshAdapter::dump: appending reduced_order to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("numNodes",numNodes) )
+        throw DataException("Error - MeshAdapter::dump: appending numNodes to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_Elements",num_Elements) )
+        throw DataException("Error - MeshAdapter::dump: appending num_Elements to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_FaceElements",num_FaceElements) )
+        throw DataException("Error - MeshAdapter::dump: appending num_FaceElements to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_ContactElements",num_ContactElements) )
+        throw DataException("Error - MeshAdapter::dump: appending num_ContactElements to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_Points",num_Points) )
+        throw DataException("Error - MeshAdapter::dump: appending num_Points to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_Elements_numNodes",num_Elements_numNodes) )
+        throw DataException("Error - MeshAdapter::dump: appending num_Elements_numNodes to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_FaceElements_numNodes",num_FaceElements_numNodes) )
+        throw DataException("Error - MeshAdapter::dump: appending num_FaceElements_numNodes to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_ContactElements_numNodes",num_ContactElements_numNodes) )
+        throw DataException("Error - MeshAdapter::dump: appending num_ContactElements_numNodes to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("Elements_TypeId", mesh->Elements->ReferenceElement->Type->TypeId) )
+      throw DataException("Error - MeshAdapter::dump: appending Elements_TypeId to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("FaceElements_TypeId", mesh->FaceElements->ReferenceElement->Type->TypeId) )
+      throw DataException("Error - MeshAdapter::dump: appending FaceElements_TypeId to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("ContactElements_TypeId", mesh->ContactElements->ReferenceElement->Type->TypeId) )
+      throw DataException("Error - MeshAdapter::dump: appending ContactElements_TypeId to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("Points_TypeId", mesh->Points->ReferenceElement->Type->TypeId) )
+      throw DataException("Error - MeshAdapter::dump: appending Points_TypeId to NetCDF file failed: " + *newFileName);
+   if (!dataFile.add_att("num_Tags", num_Tags) )
+      throw DataException("Error - MeshAdapter::dump: appending num_Tags to NetCDF file failed: " + *newFileName);
+
+   // // // // // Nodes // // // // //
+
+   // Only write nodes if non-empty because NetCDF doesn't like empty arrays (it treats them as NC_UNLIMITED)
+   if (numNodes>0) {
+
+   // Nodes Id
+   if (! ( ids = dataFile.add_var("Nodes_Id", ncInt, ncdims[0])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_Id to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->Id[0];
+   if (! (ids->put(int_ptr, numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_Id to netCDF buffer failed: " + *newFileName);
+
+   // Nodes Tag
+   if (! ( ids = dataFile.add_var("Nodes_Tag", ncInt, ncdims[0])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_Tag to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->Tag[0];
+   if (! (ids->put(int_ptr, numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_Tag to netCDF buffer failed: " + *newFileName);
+
+   // Nodes gDOF
+   if (! ( ids = dataFile.add_var("Nodes_gDOF", ncInt, ncdims[0])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_gDOF to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->globalDegreesOfFreedom[0];
+   if (! (ids->put(int_ptr, numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_gDOF to netCDF buffer failed: " + *newFileName);
+
+   // Nodes global node index
+   if (! ( ids = dataFile.add_var("Nodes_gNI", ncInt, ncdims[0])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_gNI to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->globalNodesIndex[0];
+   if (! (ids->put(int_ptr, numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_gNI to netCDF buffer failed: " + *newFileName);
+
+   // Nodes grDof
+   if (! ( ids = dataFile.add_var("Nodes_grDfI", ncInt, ncdims[0])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_grDfI to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->globalReducedDOFIndex[0];
+   if (! (ids->put(int_ptr, numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_grDfI to netCDF buffer failed: " + *newFileName);
+
+   // Nodes grNI
+   if (! ( ids = dataFile.add_var("Nodes_grNI", ncInt, ncdims[0])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_grNI to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->globalReducedNodesIndex[0];
+   if (! (ids->put(int_ptr, numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_grNI to netCDF buffer failed: " + *newFileName);
+
+   // Nodes Coordinates
+   if (! ( ids = dataFile.add_var("Nodes_Coordinates", ncDouble, ncdims[0], ncdims[1]) ) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_Coordinates to netCDF file failed: " + *newFileName);
+   if (! (ids->put(&(mesh->Nodes->Coordinates[INDEX2(0,0,numDim)]), numNodes, numDim)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_Coordinates to netCDF buffer failed: " + *newFileName);
+
+   // Nodes degreesOfFreedomDistribution
+   if (! ( ids = dataFile.add_var("Nodes_DofDistribution", ncInt, ncdims[2])) )
+        throw DataException("Error - MeshAdapter::dump: appending Nodes_DofDistribution to netCDF file failed: " + *newFileName);
+   int_ptr = &mesh->Nodes->degreesOfFreedomDistribution->first_component[0];
+   if (! (ids->put(int_ptr, mpi_size+1)) )
+        throw DataException("Error - MeshAdapter::dump: copy Nodes_DofDistribution to netCDF buffer failed: " + *newFileName);
+
+   }
+
+   // // // // // Elements // // // // //
+
+   if (num_Elements>0) {
+
+     // Temp storage to gather node IDs
+     int *Elements_Nodes = TMPMEMALLOC(num_Elements*num_Elements_numNodes,int);
+
+     // Elements_Id
+     if (! ( ids = dataFile.add_var("Elements_Id", ncInt, ncdims[3])) )
+        throw DataException("Error - MeshAdapter::dump: appending Elements_Id to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Elements->Id[0];
+     if (! (ids->put(int_ptr, num_Elements)) )
+        throw DataException("Error - MeshAdapter::dump: copy Elements_Id to netCDF buffer failed: " + *newFileName);
+
+     // Elements_Tag
+     if (! ( ids = dataFile.add_var("Elements_Tag", ncInt, ncdims[3])) )
+        throw DataException("Error - MeshAdapter::dump: appending Elements_Tag to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Elements->Tag[0];
+     if (! (ids->put(int_ptr, num_Elements)) )
+        throw DataException("Error - MeshAdapter::dump: copy Elements_Tag to netCDF buffer failed: " + *newFileName);
+
+     // Elements_Owner
+     if (! ( ids = dataFile.add_var("Elements_Owner", ncInt, ncdims[3])) )
+        throw DataException("Error - MeshAdapter::dump: appending Elements_Owner to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Elements->Owner[0];
+     if (! (ids->put(int_ptr, num_Elements)) )
+        throw DataException("Error - MeshAdapter::dump: copy Elements_Owner to netCDF buffer failed: " + *newFileName);
+
+     // Elements_Color
+     if (! ( ids = dataFile.add_var("Elements_Color", ncInt, ncdims[3])) )
+        throw DataException("Error - MeshAdapter::dump: appending Elements_Color to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Elements->Color[0];
+     if (! (ids->put(int_ptr, num_Elements)) )
+        throw DataException("Error - MeshAdapter::dump: copy Elements_Color to netCDF buffer failed: " + *newFileName);
+
+     // Elements_Nodes
+     for (int i=0; i<num_Elements; i++)
+       for (int j=0; j<num_Elements_numNodes; j++)
+         Elements_Nodes[INDEX2(j,i,num_Elements_numNodes)] = mesh->Nodes->Id[mesh->Elements->Nodes[INDEX2(j,i,num_Elements_numNodes)]];
+     if (! ( ids = dataFile.add_var("Elements_Nodes", ncInt, ncdims[3], ncdims[7]) ) )
+        throw DataException("Error - MeshAdapter::dump: appending Elements_Nodes to netCDF file failed: " + *newFileName);
+     if (! (ids->put(&(Elements_Nodes[0]), num_Elements, num_Elements_numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy Elements_Nodes to netCDF buffer failed: " + *newFileName);
+
+     TMPMEMFREE(Elements_Nodes);
+
+   }
+
+   // // // // // Face_Elements // // // // //
+
+   if (num_FaceElements>0) {
+
+     // Temp storage to gather node IDs
+     int *FaceElements_Nodes = TMPMEMALLOC(num_FaceElements*num_FaceElements_numNodes,int);
+
+     // FaceElements_Id
+     if (! ( ids = dataFile.add_var("FaceElements_Id", ncInt, ncdims[4])) )
+        throw DataException("Error - MeshAdapter::dump: appending FaceElements_Id to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->FaceElements->Id[0];
+     if (! (ids->put(int_ptr, num_FaceElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy FaceElements_Id to netCDF buffer failed: " + *newFileName);
+
+     // FaceElements_Tag
+     if (! ( ids = dataFile.add_var("FaceElements_Tag", ncInt, ncdims[4])) )
+        throw DataException("Error - MeshAdapter::dump: appending FaceElements_Tag to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->FaceElements->Tag[0];
+     if (! (ids->put(int_ptr, num_FaceElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy FaceElements_Tag to netCDF buffer failed: " + *newFileName);
+
+     // FaceElements_Owner
+     if (! ( ids = dataFile.add_var("FaceElements_Owner", ncInt, ncdims[4])) )
+        throw DataException("Error - MeshAdapter::dump: appending FaceElements_Owner to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->FaceElements->Owner[0];
+     if (! (ids->put(int_ptr, num_FaceElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy FaceElements_Owner to netCDF buffer failed: " + *newFileName);
+
+     // FaceElements_Color
+     if (! ( ids = dataFile.add_var("FaceElements_Color", ncInt, ncdims[4])) )
+        throw DataException("Error - MeshAdapter::dump: appending FaceElements_Color to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->FaceElements->Color[0];
+     if (! (ids->put(int_ptr, num_FaceElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy FaceElements_Color to netCDF buffer failed: " + *newFileName);
+
+     // FaceElements_Nodes
+     for (int i=0; i<num_FaceElements; i++)
+       for (int j=0; j<num_FaceElements_numNodes; j++)
+         FaceElements_Nodes[INDEX2(j,i,num_FaceElements_numNodes)] = mesh->Nodes->Id[mesh->FaceElements->Nodes[INDEX2(j,i,num_FaceElements_numNodes)]];
+     if (! ( ids = dataFile.add_var("FaceElements_Nodes", ncInt, ncdims[4], ncdims[8]) ) )
+        throw DataException("Error - MeshAdapter::dump: appending FaceElements_Nodes to netCDF file failed: " + *newFileName);
+     if (! (ids->put(&(FaceElements_Nodes[0]), num_FaceElements, num_FaceElements_numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy FaceElements_Nodes to netCDF buffer failed: " + *newFileName);
+
+     TMPMEMFREE(FaceElements_Nodes);
+
+   }
+
+   // // // // // Contact_Elements // // // // //
+
+   if (num_ContactElements>0) {
+
+     // Temp storage to gather node IDs
+     int *ContactElements_Nodes = TMPMEMALLOC(num_ContactElements*num_ContactElements_numNodes,int);
+
+     // ContactElements_Id
+     if (! ( ids = dataFile.add_var("ContactElements_Id", ncInt, ncdims[5])) )
+        throw DataException("Error - MeshAdapter::dump: appending ContactElements_Id to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->ContactElements->Id[0];
+     if (! (ids->put(int_ptr, num_ContactElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy ContactElements_Id to netCDF buffer failed: " + *newFileName);
+
+     // ContactElements_Tag
+     if (! ( ids = dataFile.add_var("ContactElements_Tag", ncInt, ncdims[5])) )
+        throw DataException("Error - MeshAdapter::dump: appending ContactElements_Tag to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->ContactElements->Tag[0];
+     if (! (ids->put(int_ptr, num_ContactElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy ContactElements_Tag to netCDF buffer failed: " + *newFileName);
+
+     // ContactElements_Owner
+     if (! ( ids = dataFile.add_var("ContactElements_Owner", ncInt, ncdims[5])) )
+        throw DataException("Error - MeshAdapter::dump: appending ContactElements_Owner to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->ContactElements->Owner[0];
+     if (! (ids->put(int_ptr, num_ContactElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy ContactElements_Owner to netCDF buffer failed: " + *newFileName);
+
+     // ContactElements_Color
+     if (! ( ids = dataFile.add_var("ContactElements_Color", ncInt, ncdims[5])) )
+        throw DataException("Error - MeshAdapter::dump: appending ContactElements_Color to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->ContactElements->Color[0];
+     if (! (ids->put(int_ptr, num_ContactElements)) )
+        throw DataException("Error - MeshAdapter::dump: copy ContactElements_Color to netCDF buffer failed: " + *newFileName);
+
+     // ContactElements_Nodes
+     for (int i=0; i<num_ContactElements; i++)
+       for (int j=0; j<num_ContactElements_numNodes; j++)
+         ContactElements_Nodes[INDEX2(j,i,num_ContactElements_numNodes)] = mesh->Nodes->Id[mesh->ContactElements->Nodes[INDEX2(j,i,num_ContactElements_numNodes)]];
+     if (! ( ids = dataFile.add_var("ContactElements_Nodes", ncInt, ncdims[5], ncdims[9]) ) )
+        throw DataException("Error - MeshAdapter::dump: appending ContactElements_Nodes to netCDF file failed: " + *newFileName);
+     if (! (ids->put(&(ContactElements_Nodes[0]), num_ContactElements, num_ContactElements_numNodes)) )
+        throw DataException("Error - MeshAdapter::dump: copy ContactElements_Nodes to netCDF buffer failed: " + *newFileName);
+
+     TMPMEMFREE(ContactElements_Nodes);
+
+   }
+
+   // // // // // Points // // // // //
+
+   if (num_Points>0) {
+
+     fprintf(stderr, "\n\n\nWARNING: MeshAdapter::dump has not been tested with Point elements\n\n\n");
+
+     // Temp storage to gather node IDs
+     int *Points_Nodes = TMPMEMALLOC(num_Points,int);
+
+     // Points_Id
+     if (! ( ids = dataFile.add_var("Points_Id", ncInt, ncdims[6])) )
+        throw DataException("Error - MeshAdapter::dump: appending Points_Id to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Points->Id[0];
+     if (! (ids->put(int_ptr, num_Points)) )
+        throw DataException("Error - MeshAdapter::dump: copy Points_Id to netCDF buffer failed: " + *newFileName);
+
+     // Points_Tag
+     if (! ( ids = dataFile.add_var("Points_Tag", ncInt, ncdims[6])) )
+        throw DataException("Error - MeshAdapter::dump: appending Points_Tag to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Points->Tag[0];
+     if (! (ids->put(int_ptr, num_Points)) )
+        throw DataException("Error - MeshAdapter::dump: copy Points_Tag to netCDF buffer failed: " + *newFileName);
+
+     // Points_Owner
+     if (! ( ids = dataFile.add_var("Points_Owner", ncInt, ncdims[6])) )
+        throw DataException("Error - MeshAdapter::dump: appending Points_Owner to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Points->Owner[0];
+     if (! (ids->put(int_ptr, num_Points)) )
+        throw DataException("Error - MeshAdapter::dump: copy Points_Owner to netCDF buffer failed: " + *newFileName);
+
+     // Points_Color
+     if (! ( ids = dataFile.add_var("Points_Color", ncInt, ncdims[6])) )
+        throw DataException("Error - MeshAdapter::dump: appending Points_Color to netCDF file failed: " + *newFileName);
+     int_ptr = &mesh->Points->Color[0];
+     if (! (ids->put(int_ptr, num_Points)) )
+        throw DataException("Error - MeshAdapter::dump: copy Points_Color to netCDF buffer failed: " + *newFileName);
+
+     // Points_Nodes
+     // mesh->Nodes->Id[mesh->Points->Nodes[INDEX2(0,i,1)]]
+     for (int i=0; i<num_Points; i++)
+       Points_Nodes[i] = mesh->Nodes->Id[mesh->Points->Nodes[INDEX2(0,i,1)]];
+     if (! ( ids = dataFile.add_var("Points_Nodes", ncInt, ncdims[6]) ) )
+        throw DataException("Error - MeshAdapter::dump: appending Points_Nodes to netCDF file failed: " + *newFileName);
+     if (! (ids->put(&(Points_Nodes[0]), num_Points)) )
+        throw DataException("Error - MeshAdapter::dump: copy Points_Nodes to netCDF buffer failed: " + *newFileName);
+
+     TMPMEMFREE(Points_Nodes);
+
+   }
+
+   // // // // // TagMap // // // // //
+
+   if (num_Tags>0) {
+
+     // Temp storage to gather node IDs
+     int *Tags_keys = TMPMEMALLOC(num_Tags, int);
+     char name_temp[4096];
+
+     /* Copy tag data into temp arrays */
+     tag_map = mesh->TagMap;
+     if (tag_map) {
+       int i = 0;
+       while (tag_map) {
+	Tags_keys[i++] = tag_map->tag_key;
+        tag_map=tag_map->next;
+       }
+     }
+
+     // Tags_keys
+     if (! ( ids = dataFile.add_var("Tags_keys", ncInt, ncdims[10])) )
+        throw DataException("Error - MeshAdapter::dump: appending Tags_keys to netCDF file failed: " + *newFileName);
+     int_ptr = &Tags_keys[0];
+     if (! (ids->put(int_ptr, num_Tags)) )
+        throw DataException("Error - MeshAdapter::dump: copy Tags_keys to netCDF buffer failed: " + *newFileName);
+
+     // Tags_names_*
+     // This is an array of strings, it should be stored as an array but instead I have hacked in one attribute per string
+     // because the NetCDF manual doesn't tell how to do an array of strings
+     tag_map = mesh->TagMap;
+     if (tag_map) {
+       int i = 0;
+       while (tag_map) {
+         sprintf(name_temp, "Tags_name_%d", i);
+         if (!dataFile.add_att(name_temp, tag_map->name) )
+           throw DataException("Error - MeshAdapter::dump: appending Tags_names_ to NetCDF file failed: " + *newFileName);
+         tag_map=tag_map->next;
+	 i++;
+       }
+     }
+
+     TMPMEMFREE(Tags_keys);
+
+   }
+
+
+   // NetCDF file is closed by destructor of NcFile object
+#else
+   Finley_setError(IO_ERROR, "MeshAdapter::dump: not configured with NetCDF. Please contact your installation manager.");
+#endif	/* USE_NETCDF */
+   checkFinleyError();
+}
+
 string MeshAdapter::getDescription() const
 {
-  return string("FinleyMesh");
+  return "FinleyMesh";
 }
 
 string MeshAdapter::functionSpaceTypeAsString(int functionSpaceType) const
@@ -97,7 +532,7 @@ string MeshAdapter::functionSpaceTypeAsString(int functionSpaceType) const
   if (loc==m_functionSpaceTypeNames.end()) {
     return "Invalid function space type code.";
   } else {
-    return string(loc->second);
+    return loc->second;
   }
 }
 
@@ -220,13 +655,11 @@ pair<int,int> MeshAdapter::getDataShape(int functionSpaceCode) const
    switch (functionSpaceCode) {
       case(Nodes):
            numDataPointsPerSample=1;
-           if (mesh->Nodes!=NULL) numSamples=mesh->Nodes->numNodes;
+           numSamples=Finley_NodeFile_getNumNodes(mesh->Nodes);
            break;
       case(ReducedNodes):
-           /* TODO: add ReducedNodes */
            numDataPointsPerSample=1;
-           if (mesh->Nodes!=NULL) numSamples=mesh->Nodes->numNodes;
-           throw FinleyAdapterException("Error - ReducedNodes is not supported yet.");
+           numSamples=Finley_NodeFile_getNumReducedNodes(mesh->Nodes);
            break;
       case(Elements):
            if (mesh->Elements!=NULL) {
@@ -285,21 +718,13 @@ pair<int,int> MeshAdapter::getDataShape(int functionSpaceCode) const
       case(DegreesOfFreedom):
            if (mesh->Nodes!=NULL) {
              numDataPointsPerSample=1;
-#ifndef PASO_MPI
-             numSamples=mesh->Nodes->numDegreesOfFreedom;
-#else
-             numSamples=mesh->Nodes->degreeOfFreedomDistribution->numLocal;
-#endif
+             numSamples=Finley_NodeFile_getNumDegreesOfFreedom(mesh->Nodes);
            }
            break;
       case(ReducedDegreesOfFreedom):
            if (mesh->Nodes!=NULL) {
              numDataPointsPerSample=1;
-#ifndef PASO_MPI
-             numSamples=mesh->Nodes->reducedNumDegreesOfFreedom;
-#else
-             numSamples=mesh->Nodes->reducedDegreeOfFreedomDistribution->numLocal;
-#endif
+             numSamples=Finley_NodeFile_getNumReducedDegreesOfFreedom(mesh->Nodes);
            }
            break;
       default:
@@ -346,7 +771,7 @@ void MeshAdapter::addPDEToSystem(
 
 void  MeshAdapter::addPDEToLumpedSystem(
                      escript::Data& mat,
-                     const escript::Data& D, 
+                     const escript::Data& D,
                      const escript::Data& d) const
 {
    escriptDataC _mat=mat.getDataC();
@@ -354,7 +779,7 @@ void  MeshAdapter::addPDEToLumpedSystem(
    escriptDataC _d=d.getDataC();
 
    Finley_Mesh* mesh=m_finleyMesh.get();
-   
+
    Finley_Assemble_LumpedSystem(mesh->Nodes,mesh->Elements,&_mat, &_D);
    Finley_Assemble_LumpedSystem(mesh->Nodes,mesh->FaceElements,&_mat, &_d);
 
@@ -382,6 +807,57 @@ void MeshAdapter::addPDEToRHS( escript::Data& rhs, const  escript::Data& X,const
    checkFinleyError();
 
    Finley_Assemble_PDE(mesh->Nodes,mesh->ContactElements, 0, &_rhs , 0, 0, 0, 0, 0, &_y_contact );
+   checkFinleyError();
+}
+//
+// adds PDE of second order into a transport problem
+//
+void MeshAdapter::addPDEToTransportProblem(
+                     TransportProblemAdapter& tp, escript::Data& source, const escript::Data& M,
+                     const escript::Data& A, const escript::Data& B, const escript::Data& C,const  escript::Data& D,const  escript::Data& X,const  escript::Data& Y,
+                     const escript::Data& d, const escript::Data& y, 
+                     const escript::Data& d_contact,const escript::Data& y_contact) const
+{
+   DataArrayView::ShapeType shape;
+   source.expand();
+   escript:: Data tmp(0.0,M.getDataPointShape(),tp.getFunctionSpace(),true);
+   escriptDataC _source=source.getDataC();
+   escriptDataC _tmp=tmp.getDataC();
+   escriptDataC _M=M.getDataC();
+   escriptDataC _A=A.getDataC();
+   escriptDataC _B=B.getDataC();
+   escriptDataC _C=C.getDataC();
+   escriptDataC _D=D.getDataC();
+   escriptDataC _X=X.getDataC();
+   escriptDataC _Y=Y.getDataC();
+   escriptDataC _d=d.getDataC();
+   escriptDataC _y=y.getDataC();
+   escriptDataC _d_contact=d_contact.getDataC();
+   escriptDataC _y_contact=y_contact.getDataC();
+
+   Finley_Mesh* mesh=m_finleyMesh.get();
+   Paso_FCTransportProblem* _tp = tp.getPaso_FCTransportProblem();
+   
+
+   Finley_Assemble_LumpedSystem(mesh->Nodes,mesh->Elements,&_tmp, &_M);
+   checkFinleyError();
+   /* add mass matix to lumped mass matrix of transport problem */
+   double* tmp_prt=getSampleData(&_tmp,0);
+   int i;
+   int n=Paso_FCTransportProblem_getTotalNumRows(_tp);
+   #pragma omp parallel for private(i) schedule(static)
+   for (i=0;i<n ;++i) _tp->lumped_mass_matrix[i]+=tmp_prt[i];
+
+   Finley_Assemble_PDE(mesh->Nodes,mesh->Elements,_tp->transport_matrix, &_source, &_A, 0, 0, &_D, &_X, &_Y );
+   checkFinleyError();
+
+   Finley_Assemble_PDE(mesh->Nodes,mesh->Elements,_tp->flux_matrix, &_source, 0, &_B, &_C, 0, 0, 0 );
+   checkFinleyError();
+
+   Finley_Assemble_PDE(mesh->Nodes,mesh->FaceElements, _tp->transport_matrix, &_source, 0, 0, 0, &_d, 0, &_y );
+   checkFinleyError();
+
+   Finley_Assemble_PDE(mesh->Nodes,mesh->ContactElements, _tp->transport_matrix, &_source , 0, 0, 0, &_d_contact, 0, &_y_contact );
    checkFinleyError();
 }
 
@@ -492,10 +968,10 @@ void MeshAdapter::interpolateOnDomain(escript::Data& target,const escript::Data&
            Finley_Assemble_AverageElementData(mesh->FaceElements,&_target,&_in);
         } else {
            throw FinleyAdapterException("Error - No interpolation with data on face elements possible.");
-       }
-       break;
+        }
+        break;
      case(ReducedFaceElements):
-        if (target.getFunctionSpace().getTypeCode()==FaceElements) {
+        if (target.getFunctionSpace().getTypeCode()==ReducedFaceElements) {
            Finley_Assemble_CopyElementData(mesh->FaceElements,&_target,&_in);
         } else {
            throw FinleyAdapterException("Error - No interpolation with data on face elements with reduced integration order possible.");
@@ -516,7 +992,6 @@ void MeshAdapter::interpolateOnDomain(escript::Data& target,const escript::Data&
            Finley_Assemble_AverageElementData(mesh->ContactElements,&_target,&_in);
         } else {
            throw FinleyAdapterException("Error - No interpolation with data on contact elements possible.");
-           break;
         }
         break;
      case(ReducedContactElementsZero):
@@ -525,59 +1000,67 @@ void MeshAdapter::interpolateOnDomain(escript::Data& target,const escript::Data&
            Finley_Assemble_CopyElementData(mesh->ContactElements,&_target,&_in);
         } else {
            throw FinleyAdapterException("Error - No interpolation with data on contact elements with reduced integration order possible.");
-           break;
         }
         break;
      case(DegreesOfFreedom):      
         switch(target.getFunctionSpace().getTypeCode()) {
            case(ReducedDegreesOfFreedom):
            case(DegreesOfFreedom):
-           case(Nodes):
-           case(ReducedNodes):
               Finley_Assemble_CopyNodalData(mesh->Nodes,&_target,&_in);
               break;
-#ifndef PASO_MPI
+
+           case(Nodes):
+           case(ReducedNodes):
+              if (getMPISize()>1) {
+                  escript::Data temp=escript::Data(in);
+                  temp.expand();
+                  escriptDataC _in2 = temp.getDataC();
+                  Finley_Assemble_CopyNodalData(mesh->Nodes,&_target,&_in2);
+              } else {
+                  Finley_Assemble_CopyNodalData(mesh->Nodes,&_target,&_in);
+              }
+              break;
            case(Elements):
            case(ReducedElements):
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&_in2,&_target);
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&_in,&_target);
+              }
               break;
            case(FaceElements):
            case(ReducedFaceElements):
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&_in2,&_target);
+
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&_in,&_target);
+              }
               break;
            case(Points):
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->Points,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Points,&_in,&_target);
+              }
               break;
            case(ContactElementsZero):
            case(ContactElementsOne):
            case(ReducedContactElementsZero):
            case(ReducedContactElementsOne):
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&_in2,&_target);
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&_in,&_target);
+              }
              break;
-#else
-           /* need to copy Degrees of freedom data to nodal data so that the external values are available */
-           case(Elements):
-           case(ReducedElements):
-              escript::Data nodeTemp( in, continuousFunction(asAbstractContinuousDomain()) );
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&(nodeTemp.getDataC()),&_target);
-              break;
-           case(FaceElements):
-           case(ReducedFaceElements):
-              escript::Data nodeTemp( in, continuousFunction(asAbstractContinuousDomain()) );
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&(nodeTemp.getDataC()),&_target);
-              break;
-           case(Points):
-              escript::Data nodeTemp( in, continuousFunction(asAbstractContinuousDomain()) );
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->Points,&(nodeTemp.getDataC()),&_target);
-              break;
-           case(ContactElementsZero):
-           case(ContactElementsOne):
-           case(ReducedContactElementsZero):
-           case(ReducedContactElementsOne):
-              escript::Data nodeTemp( in, continuousFunction(asAbstractContinuousDomain()) );
-              Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&(nodeTemp.getDataC()),&_target);
-             break;
-#endif
            default:
              stringstream temp;
              temp << "Error - Interpolation On Domain: Finley does not know anything about function space type " << target.getFunctionSpace().getTypeCode();
@@ -591,8 +1074,15 @@ void MeshAdapter::interpolateOnDomain(escript::Data& target,const escript::Data&
              throw FinleyAdapterException("Error - Finley does not support interpolation from reduced degrees of freedom to mesh nodes.");
              break;
           case(ReducedNodes):
-             Finley_Assemble_CopyNodalData(mesh->Nodes,&_target,&_in);
-             break;
+              if (getMPISize()>1) {
+                  escript::Data temp=escript::Data(in);
+                  temp.expand();
+                  escriptDataC _in2 = temp.getDataC();
+                  Finley_Assemble_CopyNodalData(mesh->Nodes,&_target,&_in2);
+              } else {
+                  Finley_Assemble_CopyNodalData(mesh->Nodes,&_target,&_in);
+              }
+              break;
           case(DegreesOfFreedom):
              throw FinleyAdapterException("Error - Finley does not support interpolation from reduced degrees of freedom to degrees of freedom");
              break;
@@ -601,20 +1091,44 @@ void MeshAdapter::interpolateOnDomain(escript::Data& target,const escript::Data&
              break;
           case(Elements):
           case(ReducedElements):
-             Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&_in2,&_target);
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Elements,&_in,&_target);
+             }
              break;
           case(FaceElements):
           case(ReducedFaceElements):
-             Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&_in2,&_target);
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->FaceElements,&_in,&_target);
+              }
              break;
           case(Points):
-             Finley_Assemble_interpolate(mesh->Nodes,mesh->Points,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Points,&_in2,&_target);
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->Points,&_in,&_target);
+             }
              break;
           case(ContactElementsZero):
           case(ContactElementsOne):
           case(ReducedContactElementsZero):
           case(ReducedContactElementsOne):
-             Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&_in,&_target);
+              if (getMPISize()>1) {
+                 escript::Data temp=escript::Data( in,  continuousFunction(asAbstractContinuousDomain()) );
+                 escriptDataC _in2 = temp.getDataC();
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&_in2,&_target);
+              } else {
+                 Finley_Assemble_interpolate(mesh->Nodes,mesh->ContactElements,&_in,&_target);
+             }
              break;
           default:
              stringstream temp;
@@ -731,16 +1245,21 @@ void MeshAdapter::setToIntegrals(std::vector<double>& integrals,const escript::D
   if (argDomain!=*this) 
      throw FinleyAdapterException("Error - Illegal domain of integration kernel");
 
+  double blocktimer_start = blocktimer_time();
   Finley_Mesh* mesh=m_finleyMesh.get();
+  escriptDataC _temp;
+  escript::Data temp;
   escriptDataC _arg=arg.getDataC();
   switch(arg.getFunctionSpace().getTypeCode()) {
      case(Nodes):
-        /* TODO */
-        throw FinleyAdapterException("Error - Integral of data on nodes is not supported.");
+        temp=escript::Data( arg, function(asAbstractContinuousDomain()) );
+        _temp=temp.getDataC();
+        Finley_Assemble_integrate(mesh->Nodes,mesh->Elements,&_temp,&integrals[0]);
         break;
      case(ReducedNodes):
-        /* TODO */
-        throw FinleyAdapterException("Error - Integral of data on reduced nodes is not supported.");
+        temp=escript::Data( arg, function(asAbstractContinuousDomain()) );
+        _temp=temp.getDataC();
+        Finley_Assemble_integrate(mesh->Nodes,mesh->Elements,&_temp,&integrals[0]);
         break;
      case(Elements):
         Finley_Assemble_integrate(mesh->Nodes,mesh->Elements,&_arg,&integrals[0]);
@@ -770,10 +1289,14 @@ void MeshAdapter::setToIntegrals(std::vector<double>& integrals,const escript::D
         Finley_Assemble_integrate(mesh->Nodes,mesh->ContactElements,&_arg,&integrals[0]);
         break;
      case(DegreesOfFreedom):
-        throw FinleyAdapterException("Error - Integral of data on degrees of freedom is not supported.");
+        temp=escript::Data( arg, function(asAbstractContinuousDomain()) );
+        _temp=temp.getDataC();
+        Finley_Assemble_integrate(mesh->Nodes,mesh->Elements,&_temp,&integrals[0]);
         break;
      case(ReducedDegreesOfFreedom):
-        throw FinleyAdapterException("Error - Integral of data on reduced degrees of freedom is not supported.");
+        temp=escript::Data( arg, function(asAbstractContinuousDomain()) );
+        _temp=temp.getDataC();
+        Finley_Assemble_integrate(mesh->Nodes,mesh->Elements,&_temp,&integrals[0]);
         break;
      default:
         stringstream temp;
@@ -782,6 +1305,7 @@ void MeshAdapter::setToIntegrals(std::vector<double>& integrals,const escript::D
         break;
   }
   checkFinleyError();
+  blocktimer_increment("integrate()", blocktimer_start);
 }
 
 //
@@ -799,18 +1323,20 @@ void MeshAdapter::setToGradient(escript::Data& grad,const escript::Data& arg) co
   Finley_Mesh* mesh=m_finleyMesh.get();
   escriptDataC _grad=grad.getDataC();
   escriptDataC nodeDataC;
-#ifdef PASO_MPI
-  escript::Data nodeTemp( arg, continuousFunction(asAbstractContinuousDomain()) );
-  if( arg.getFunctionSpace().getTypeCode() != Nodes )
-  {
-    Finley_Assemble_CopyNodalData(mesh->Nodes,&(nodeTemp.getDataC()),&(arg.getDataC()));
-    nodeDataC = nodeTemp.getDataC();
+  escript::Data temp;
+  if (getMPISize()>1) {
+      if( arg.getFunctionSpace().getTypeCode() == DegreesOfFreedom ) {
+        temp=escript::Data( arg,  continuousFunction(asAbstractContinuousDomain()) );
+        nodeDataC = temp.getDataC();
+      } else if( arg.getFunctionSpace().getTypeCode() == ReducedDegreesOfFreedom ) {
+        temp=escript::Data( arg,  reducedContinuousFunction(asAbstractContinuousDomain()) );
+        nodeDataC = temp.getDataC();
+      } else {
+        nodeDataC = arg.getDataC();
+      }
+  } else {
+     nodeDataC = arg.getDataC();
   }
-  else
-    nodeDataC = arg.getDataC();
-#else
-  nodeDataC = arg.getDataC();
-#endif
   switch(grad.getFunctionSpace().getTypeCode()) {
        case(Nodes):
           throw FinleyAdapterException("Error - Gradient at nodes is not supported.");
@@ -941,14 +1467,14 @@ void MeshAdapter::saveDX(const std::string& filename,const boost::python::dict& 
   escriptDataC *data = (num_data>0) ? TMPMEMALLOC(num_data,escriptDataC) : (escriptDataC*)NULL;
   escriptDataC* *ptr_data = (num_data>0) ? TMPMEMALLOC(num_data,escriptDataC*) : (escriptDataC**)NULL;
 
-    boost::python::list keys=arg.keys();
-    for (int i=0;i<num_data;++i) {
+  boost::python::list keys=arg.keys();
+  for (int i=0;i<num_data;++i) {
+         std::string n=boost::python::extract<std::string>(keys[i]);
          escript::Data& d=boost::python::extract<escript::Data&>(arg[keys[i]]);
          if (dynamic_cast<const MeshAdapter&>(d.getFunctionSpace().getDomain()) !=*this) 
-             throw FinleyAdapterException("Error  in saveDX: Data must be defined on same Domain");
+             throw FinleyAdapterException("Error  in saveVTK: Data must be defined on same Domain");
          data[i]=d.getDataC();
          ptr_data[i]=&(data[i]);
-         std::string n=boost::python::extract<std::string>(keys[i]);
          c_names[i]=&(names[i][0]);
          if (n.length()>MAX_namelength-1) {
             strncpy(c_names[i],n.c_str(),MAX_namelength-1);
@@ -991,12 +1517,12 @@ void MeshAdapter::saveVTK(const std::string& filename,const boost::python::dict&
 
     boost::python::list keys=arg.keys();
     for (int i=0;i<num_data;++i) {
+         std::string n=boost::python::extract<std::string>(keys[i]);
          escript::Data& d=boost::python::extract<escript::Data&>(arg[keys[i]]);
          if (dynamic_cast<const MeshAdapter&>(d.getFunctionSpace().getDomain()) !=*this) 
              throw FinleyAdapterException("Error  in saveVTK: Data must be defined on same Domain");
          data[i]=d.getDataC();
          ptr_data[i]=&(data[i]);
-         std::string n=boost::python::extract<std::string>(keys[i]);
          c_names[i]=&(names[i][0]);
          if (n.length()>MAX_namelength-1) {
             strncpy(c_names[i],n.c_str(),MAX_namelength-1);
@@ -1005,13 +1531,9 @@ void MeshAdapter::saveVTK(const std::string& filename,const boost::python::dict&
             strcpy(c_names[i],n.c_str());
          }
     }
-#ifndef PASO_MPI    
     Finley_Mesh_saveVTK(filename.c_str(),m_finleyMesh.get(),num_data,c_names,ptr_data);
-#else
-    Finley_Mesh_saveVTK_MPIO(filename.c_str(),m_finleyMesh.get(),num_data,c_names,ptr_data);
-#endif
 
-checkFinleyError();
+  checkFinleyError();
   /* win32 refactor */
   TMPMEMFREE(c_names);
   TMPMEMFREE(data);
@@ -1062,10 +1584,50 @@ SystemMatrixAdapter MeshAdapter::newSystemMatrix(
     
     Paso_SystemMatrixPattern* fsystemMatrixPattern=Finley_getPattern(getFinley_Mesh(),reduceRowOrder,reduceColOrder);
     checkFinleyError();
-    Paso_SystemMatrix* fsystemMatrix=Paso_SystemMatrix_alloc(type,fsystemMatrixPattern,row_blocksize,column_blocksize);
+    Paso_SystemMatrix* fsystemMatrix;
+    int trilinos = 0;
+    if (trilinos) {
+#ifdef TRILINOS
+      /* Allocation Epetra_VrbMatrix here */
+#endif
+    }
+    else {
+      fsystemMatrix=Paso_SystemMatrix_alloc(type,fsystemMatrixPattern,row_blocksize,column_blocksize);
+    }
     checkPasoError();
-    Paso_SystemMatrixPattern_dealloc(fsystemMatrixPattern);
+    Paso_SystemMatrixPattern_free(fsystemMatrixPattern);
     return SystemMatrixAdapter(fsystemMatrix,row_blocksize,row_functionspace,column_blocksize,column_functionspace);
+}
+// creates a TransportProblemAdapter
+TransportProblemAdapter MeshAdapter::newTransportProblem(
+                      const double theta,
+                      const double dt_max,
+                      const int blocksize,
+                      const escript::FunctionSpace& functionspace,
+                      const int type) const
+{
+    int reduceOrder=0;
+    // is the domain right?
+    const MeshAdapter& domain=dynamic_cast<const MeshAdapter&>(functionspace.getDomain());
+    if (domain!=*this) 
+          throw FinleyAdapterException("Error - domain of function space does not match the domain of transport problem generator.");
+    // is the function space type right 
+    if (functionspace.getTypeCode()==DegreesOfFreedom) {
+        reduceOrder=0;
+    } else if (functionspace.getTypeCode()==ReducedDegreesOfFreedom) {
+        reduceOrder=1;
+    } else {
+        throw FinleyAdapterException("Error - illegal function space type for system matrix rows.");
+    }
+    // generate matrix:
+    
+    Paso_SystemMatrixPattern* fsystemMatrixPattern=Finley_getPattern(getFinley_Mesh(),reduceOrder,reduceOrder);
+    checkFinleyError();
+    Paso_FCTransportProblem* transportProblem;
+    transportProblem=Paso_FCTransportProblem_alloc(theta,dt_max,fsystemMatrixPattern,blocksize);
+    checkPasoError();
+    Paso_SystemMatrixPattern_free(fsystemMatrixPattern);
+    return TransportProblemAdapter(transportProblem,theta,dt_max,blocksize,functionspace);
 }
 
 //
@@ -1305,12 +1867,10 @@ int* MeshAdapter::borrowSampleReferenceIDs(int functionSpaceType) const
   Finley_Mesh* mesh=m_finleyMesh.get();
   switch (functionSpaceType) {
     case(Nodes):
-      if (mesh->Nodes!=NULL) {
-        out=mesh->Nodes->Id;
-        break;
-      }
+      out=mesh->Nodes->Id;
+      break;
     case(ReducedNodes):
-      throw FinleyAdapterException("Error -  ReducedNodes not supported yet.");
+      out=mesh->Nodes->reducedNodesId;
       break;
     case(Elements):
       out=mesh->Elements->Id;
@@ -1340,10 +1900,10 @@ int* MeshAdapter::borrowSampleReferenceIDs(int functionSpaceType) const
       out=mesh->ContactElements->Id;
       break;
     case(DegreesOfFreedom):
-      out=mesh->Nodes->degreeOfFreedomId;
+      out=mesh->Nodes->degreesOfFreedomId;
       break;
     case(ReducedDegreesOfFreedom):
-      out=mesh->Nodes->reducedDegreeOfFreedomId;
+      out=mesh->Nodes->reducedDegreesOfFreedomId;
       break;
     default:
       stringstream temp;
@@ -1494,7 +2054,7 @@ std::string MeshAdapter::showTagNames() const
      tag_map=tag_map->next;
      if (tag_map) temp << ", ";
   }
-  return string(temp.str());
+  return temp.str();
 }
 
 }  // end of namespace

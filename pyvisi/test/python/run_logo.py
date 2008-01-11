@@ -1,7 +1,7 @@
 from esys.pyvisi import Scene, ImageReader, Logo
 from esys.pyvisi import LocalPosition
 from esys.pyvisi.constant import *
-import unittest, os
+import unittest, os, sys
 from stat import ST_SIZE
 
 try:
@@ -60,5 +60,6 @@ class TestAccessLogo(unittest.TestCase, TestLogo):
 if __name__ == '__main__':
 	suite = unittest.TestSuite()
 	suite.addTest(unittest.TestLoader().loadTestsFromTestCase(TestAccessLogo))
-	unittest.TextTestRunner(verbosity=2).run(suite)
+	s=unittest.TextTestRunner(verbosity=2).run(suite)
+        if not s.wasSuccessful(): sys.exit(1)
 

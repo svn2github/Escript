@@ -1,4 +1,19 @@
-# $Id:$
+#
+# $Id$
+#
+#######################################################
+#
+#           Copyright 2003-2007 by ACceSS MNRF
+#       Copyright 2007 by University of Queensland
+#
+#                http://esscc.uq.edu.au
+#        Primary Business: Queensland, Australia
+#  Licensed under the Open Software License version 3.0
+#     http://www.opensource.org/licenses/osl-3.0.php
+#
+#######################################################
+#
+
 """
 frame to ran a single test out of the Test_util suite
 """
@@ -10,35 +25,31 @@ __license__="""Licensed under the Open Software License version 3.0
              http://www.opensource.org/licenses/osl-3.0.php"""
 import unittest
 from esys.escript import *
-from esys.escript.pdetools import Projector
-from esys.finley import Rectangle
-# from test_pdetools import Test_pdetools
+from esys.escript.linearPDEs import LinearPDE
+from esys.finley import Rectangle, JoinFaces, Brick
 
-NE=6
 import numarray
-class Test_LinearPDEOnFinleyHex2DOrder1(unittest.TestCase):
+FINLEY_TEST_MESH_PATH="data_meshes/"
+
+NE=1 # number of element in each spatial direction (must be even)
+
+class Test_X(unittest.TestCase):
    RES_TOL=1.e-7
    ABS_TOL=1.e-8
+   DEBUG=True
    def setUp(self):
-        self.domain = Rectangle(NE,NE,1)
-   def tearDown(self):
-        del self.domain
-   def testProjector_rank3_fast_reduced_with_reduced_input(self):
-      for i in range(800):
-	      print i,i
-	      f=ContinuousFunction(self.domain)
-	      x=f.getX()
-	      h=Lsup(self.domain.getSize())
-	      p=Projector(self.domain, reduce=True,fast=True)
-	      # td_ref=numarray.array([[[111.,112.],[121,122.]],[[211.,212.],[221,222.]]])
-      	      a=Data([1.,1.],ReducedFunction(self.domain))
-              # Lsup(a)
-	      td=p(a)
-              # self.failUnless(Lsup(td-td_ref)<Lsup(td_ref)*h,"value wrong")
+        self.domain = Rectangle(n0=NE,n1=NE,l0=0.5,order=1)
+
+   def test_setCoefficient_y_reduced_Scalar_using_y(self):
+        d=self.domain.getDim()
+        mypde=LinearPDE(self.domain,numSolutions=3,debug=self.DEBUG)
+        mypde.setValue(y=Scalar(1.,ReducedFunctionOnBoundary(self.domain)))
+        coeff=mypde.getCoefficientOfGeneralPDE("y_reduced")
+        self.failUnlessEqual((coeff.getShape(),coeff.getFunctionSpace(),mypde.getNumEquations()),((),ReducedFunctionOnBoundary(self.domain),1))
 
 if __name__ == '__main__':
    suite = unittest.TestSuite()
-   suite.addTest(unittest.makeSuite(Test_LinearPDEOnFinleyHex2DOrder1))
+   suite.addTest(unittest.makeSuite(Test_X))
    s=unittest.TextTestRunner(verbosity=2).run(suite)
 
 
